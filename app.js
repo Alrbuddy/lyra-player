@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.6";
+  const APP_VERSION = "1.4.7";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -39,6 +39,9 @@
   const GEAR_SVG = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>';
   const PLUS_SVG = '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
   const BACK_SVG = '<svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>';
+  const UP_SVG = '<svg viewBox="0 0 24 24"><path d="m6 14 6-6 6 6"/></svg>';
+  const DOWN_SVG = '<svg viewBox="0 0 24 24"><path d="m6 10 6 6 6-6"/></svg>';
+  const X_SVG = '<svg viewBox="0 0 24 24"><path d="M6 6 18 18M18 6 6 18"/></svg>';
 
   function setHeartState(btn, track) {
     btn.dataset.like = track ? track.id : "";
@@ -377,9 +380,46 @@
   let libGrid = false;
   let selecting = false;
   let selected = new Set();
+  let libSort = "recent"; // recent | title | artist | plays
+  const SORT_LABELS = { recent: "Recents", title: "Title A–Z", artist: "Artist A–Z", plays: "Most played" };
+
+  function sortKeyOf(t) {
+    const name = libSort === "artist" ? artistOf(t) : t.title;
+    return String(name || "").toUpperCase();
+  }
 
   function sortedTracks() {
-    return tracks.slice().sort((a, b) => b.addedAt - a.addedAt);
+    const list = tracks.slice();
+    const byTitle = (a, b) => String(a.title || "").localeCompare(String(b.title || ""), undefined, { sensitivity: "base" });
+    if (libSort === "title") return list.sort(byTitle);
+    if (libSort === "artist") {
+      return list.sort((a, b) => String(artistOf(a)).localeCompare(String(artistOf(b)), undefined, { sensitivity: "base" }) || byTitle(a, b));
+    }
+    if (libSort === "plays") return list.sort((a, b) => (b.plays || 0) - (a.plays || 0) || byTitle(a, b));
+    return list.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+  }
+
+  // Letters that actually start a group in the current order, for the jump strip.
+  function sortLetters(list) {
+    const seen = [];
+    for (const t of list) {
+      const c = sortKeyOf(t)[0];
+      if (c && /[A-Z0-9]/.test(c) && seen[seen.length - 1] !== c) seen.push(c);
+    }
+    return [...new Set(seen)].sort();
+  }
+
+  function openSortSheet() {
+    openSheet(`<div class="sheet-title">Sort songs</div>` +
+      Object.keys(SORT_LABELS).map((k) =>
+        `<button class="sheet-item" data-sort="${k}"><span style="flex:1;text-align:left">${SORT_LABELS[k]}</span>${libSort === k ? "✓" : ""}</button>`).join(""));
+    $("#sheet").querySelectorAll("[data-sort]").forEach((b) => (b.onclick = async () => {
+      libSort = b.dataset.sort;
+      closeSheet();
+      try { await db.setSetting("libSort", libSort); } catch (e) { /* private mode */ }
+      render();
+      $("#view").scrollTo({ top: 0 });
+    }));
   }
 
   function viewLibrary() {
@@ -431,7 +471,9 @@
           `<button class="chip ${libFilter === f ? "on" : ""}" data-libfilter="${f}">${f[0].toUpperCase() + f.slice(1)}</button>`).join("")}
       </div>
       <div class="row-between" style="margin-bottom:4px">
-        <button class="chip" style="background:none;color:var(--text-dim);padding-left:0" disabled>Recents</button>
+        ${libFilter === "songs"
+          ? `<button class="chip" id="lib-sort" style="background:none;color:var(--text-dim);padding-left:0">${SORT_LABELS[libSort]} ▾</button>`
+          : `<span></span>`}
         <div style="display:flex;gap:2px">
           ${libFilter === "songs" ? `<button class="chip" id="lib-select">${selecting ? "Done" : "Select"}</button>` : ""}
           <button class="icon-btn" id="lib-toggle" aria-label="Toggle list or grid">
@@ -439,6 +481,9 @@
           </button>
         </div>
       </div>
+      ${libFilter === "songs" && libSort !== "recent" && sortedTracks().length > 11
+        ? `<div class="az-strip" id="az-strip">${sortLetters(sortedTracks()).map((c) => `<button class="az-btn" data-letter="${c}">${c}</button>`).join("")}</div>`
+        : ""}
       <div id="lib-body" class="${libGrid && libFilter === "songs" ? "tiles" : ""}">${body}</div>
       ${bulk}</div>`;
   }
@@ -474,6 +519,43 @@
     return AUDIO_EXT.test(file.name);
   }
 
+  const normText = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+
+  // A file that looks like a song already in the library: same title, same
+  // artist (tag or your edit), and a length within two seconds.
+  function findDuplicate(staged) {
+    const title = normText(staged.tags.title);
+    const artist = normText(staged.tags.artist);
+    const dur = Number(staged.duration) || 0;
+    if (!title) return null;
+    return tracks.find((t) => {
+      if (normText(t.title) !== title) return false;
+      if (dur && t.duration && Math.abs(t.duration - dur) > 2) return false;
+      if (!artist) return true;
+      return normText(t.artist) === artist || normText(artistOf(t)) === artist;
+    }) || null;
+  }
+
+  // "skip" keeps only the new songs, "all" imports the duplicates too.
+  function duplicateSheet(dupes, total) {
+    return new Promise((resolve) => {
+      openSheet(`<div class="sheet-title">Already in your library</div>
+        <div style="padding:0 14px 8px;color:var(--text-dim);font-size:14px;line-height:1.5">
+          ${dupes.length} of ${total} looked like songs you already have.
+        </div>
+        <div class="queue-list">${dupes.slice(0, 6).map((d) =>
+          `<div class="q-row"><div class="song-info"><div class="song-title">${esc(d.tags.title)}</div><div class="song-sub">${esc(d.tags.artist || "")}</div></div></div>`).join("")}
+          ${dupes.length > 6 ? `<div class="q-more">+${dupes.length - 6} more</div>` : ""}</div>
+        <div class="sheet-actions" style="flex-direction:column;gap:8px">
+          <button class="btn primary" id="dup-skip" style="width:100%">Skip the duplicates</button>
+          <button class="btn ghost" id="dup-all" style="width:100%">Import everything</button>
+        </div>`);
+      const done = (mode) => { closeSheet(); resolve(mode); };
+      $("#dup-skip").onclick = () => done("skip");
+      $("#dup-all").onclick = () => done("all");
+    });
+  }
+
   async function importFiles(fileList) {
     const out = $("#import-out");
     const files = [...fileList];
@@ -486,29 +568,52 @@
         `<div class="import-line"><span>${esc(txt)}</span><span class="${status === "added" ? "ok" : "bad"}">${status}</span></div>`);
     };
 
-    let persisted = false;
+    // Read every file's tags first so duplicates can be spotted before a
+    // second copy of the same song lands in the library.
+    const staged = [];
     for (const file of files) {
-      if (!isAudioFile(file)) {
-        skipped++; line(file.name, "not audio"); continue;
-      }
+      if (!isAudioFile(file)) { skipped++; line(file.name, "not audio"); continue; }
       try {
         const [tags, duration] = await Promise.all([
           window.Lyra.id3.readTags(file),
           window.Lyra.id3.readDuration(file),
         ]);
+        staged.push({ file, tags, duration: duration || 0 });
+      } catch (e) {
+        skipped++; line(file.name, "couldn't read");
+      }
+    }
+
+    const dupes = staged.filter((s) => findDuplicate(s));
+    let mode = "all";
+    if (dupes.length) {
+      mode = await duplicateSheet(dupes, staged.length);
+      if (!mode) return;
+    }
+
+    let persisted = false;
+    for (const s of staged) {
+      if (mode === "skip" && findDuplicate(s)) {
+        skipped++;
+        line(s.tags.title + " — already in library", "skipped");
+        continue;
+      }
+      try {
         await db.addTrack({
-          title: tags.title, artist: tags.artist, album: tags.album,
-          duration: duration || 0, addedAt: Date.now(),
+          title: s.tags.title, artist: s.tags.artist, album: s.tags.album,
+          duration: s.duration, addedAt: Date.now(),
           plays: 0, liked: false, lyrics: "",
-          art: tags.art, audio: file,
+          art: s.tags.art, audio: s.file,
         });
-        imported++; line(tags.title, "added");
+        imported++;
+        line(s.tags.title, "added");
         if (!persisted) {
           persisted = true;
           if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
         }
       } catch (e) {
-        skipped++; line(file.name, "couldn't read");
+        skipped++;
+        line(s.file.name, "couldn't read");
       }
     }
     await refreshData();
@@ -517,6 +622,7 @@
     if (out && !imported) out.insertAdjacentHTML("afterbegin",
       `<div class="import-hint">Nothing was imported. If the picker would not let you select your songs, try “Browse all files”.</div>`);
     toast(`${imported} imported${skipped ? `, ${skipped} skipped` : ""}`);
+    maybeBackupNudge();
   }
 
   // ---------- Settings ----------
@@ -533,6 +639,7 @@
       <button class="set-row" id="set-restore" style="width:100%;text-align:left">
         <div><div class="l">Restore backup</div><div class="s">Merge a backup into this library (matched by title, artist, duration).</div></div>
       </button>
+      <div class="set-row"><div><div class="l">Last backup</div><div class="s" id="set-lastbackup">—</div></div></div>
       <div class="set-row">
         <div><div class="l">Lyrics auto-scroll</div><div class="s">Default for the lyrics view</div></div>
         <input type="checkbox" class="ios" id="set-autoscroll">
@@ -650,35 +757,97 @@
   }
 
   // ---------- Backup ----------
+  const BACKUP_KEY = "lastBackupAt";
+  let nudgedThisSession = false;
+
+  function backupLabel(at) {
+    if (!at) return "Never — everything lives only on this device";
+    const d = new Date(Number(at));
+    return "Last saved " +
+      d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  async function fillBackupInfo() {
+    const el = $("#set-lastbackup");
+    if (!el) return;
+    const at = await db.getSetting(BACKUP_KEY).catch(() => 0);
+    if (el.isConnected) el.textContent = backupLabel(at);
+  }
+
+  // A gentle reminder only when a library big enough to hurt has no recent
+  // backup — the audio itself can never be recovered from one.
+  function maybeBackupNudge() {
+    if (nudgedThisSession) return;
+    db.getSetting(BACKUP_KEY).then((at) => {
+      const stale = !at || Date.now() - Number(at) > 14 * 86400000;
+      if (!stale || tracks.length < 5 || nudgedThisSession) return;
+      nudgedThisSession = true;
+      setTimeout(() => toast("Tip: Settings → Export backup saves your lyrics and playlists"), 1400);
+    }).catch(() => {});
+  }
+
   async function exportBackup() {
     const data = {
-      app: "lyra", version: 1, exportedAt: Date.now(),
+      app: "lyra", version: 2, exportedAt: Date.now(),
       tracks: tracks.map((t) => ({
-        title: t.title, artist: t.artist, album: t.album, duration: t.duration,
-        liked: !!t.liked, plays: t.plays || 0, lyrics: t.lyrics || "", addedAt: t.addedAt,
+        title: t.title, artist: t.artist, album: t.album,
+        // The names you typed in yourself, so a re-import after a reinstall
+        // can be matched even when the file's own tags disagree.
+        artistManual: t.artistManual || "", albumManual: t.albumManual || "",
+        duration: t.duration || 0,
+        liked: !!t.liked, plays: t.plays || 0,
+        lyrics: t.lyrics || "", lyricsSynced: t.lyricsSynced || null,
+        startAt: t.startAt || 0, endAt: t.endAt || 0,
+        addedAt: t.addedAt || 0, lastPlayedAt: t.lastPlayedAt || 0,
       })),
       playlists: playlists.map((p) => ({
         name: p.name, createdAt: p.createdAt,
         tracks: p.trackIds.map((id) => tracks.find((t) => t.id === id)).filter(Boolean)
-          .map((t) => ({ title: t.title, artist: t.artist, duration: t.duration })),
+          .map((t) => ({
+            title: t.title, artist: t.artist, artistManual: t.artistManual || "", duration: t.duration || 0,
+          })),
       })),
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const file = new File([blob], "lyra-backup.json", { type: "application/json" });
+    let saved = false;
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file], title: "Lyra backup" }); return; } catch (e) {
+      try {
+        await navigator.share({ files: [file], title: "Lyra backup" });
+        saved = true;
+      } catch (e) {
         if (e && e.name === "AbortError") return;
       }
     }
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "lyra-backup.json";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    toast("Backup downloaded (audio not included)");
+    if (!saved) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "lyra-backup.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      saved = true;
+    }
+    if (!saved) return;
+    await db.setSetting(BACKUP_KEY, Date.now()).catch(() => {});
+    fillBackupInfo();
+    toast("Backup saved (audio not included)");
   }
 
-  const keyOf = (o) => `${(o.title || "").toLowerCase()}|${(o.artist || "").toLowerCase()}|${Math.round(o.duration || 0)}`;
+  // Match a saved song to one on this device: same title, same length within
+  // two seconds, and a name shared between the file's tags and your edits.
+  function restoreLookup(saved) {
+    const title = normText(saved.title);
+    const dur = Math.round(saved.duration || 0);
+    const wanted = [saved.artist, saved.artistManual].filter(Boolean).map(normText);
+    if (!title) return null;
+    for (const t of tracks) {
+      if (normText(t.title) !== title) continue;
+      if (dur && t.duration && Math.abs(t.duration - dur) > 2) continue;
+      const local = [t.artist, artistOf(t)].filter(Boolean).map(normText);
+      if (!wanted.length || wanted.some((n) => local.includes(n))) return t;
+    }
+    return null;
+  }
 
   async function restoreBackup(file) {
     let data;
@@ -689,20 +858,25 @@
       toast("That file is not a valid backup"); return;
     }
     let updated = 0, playlistsMade = 0;
-    const byKey = new Map(tracks.map((t) => [keyOf(t), t]));
     for (const bt of data.tracks) {
-      const t = byKey.get(keyOf(bt));
+      const t = restoreLookup(bt);
       if (!t) continue;
       t.liked = !!bt.liked;
       t.plays = Math.max(t.plays || 0, bt.plays || 0);
       if (bt.lyrics) t.lyrics = bt.lyrics;
+      if (bt.lyricsSynced) t.lyricsSynced = bt.lyricsSynced;
+      if (bt.artistManual) t.artistManual = bt.artistManual;
+      if (bt.albumManual) t.albumManual = bt.albumManual;
+      if (bt.startAt) t.startAt = bt.startAt;
+      if (bt.endAt) t.endAt = bt.endAt;
+      if (bt.lastPlayedAt) t.lastPlayedAt = Math.max(t.lastPlayedAt || 0, bt.lastPlayedAt);
       await db.putTrack(t);
       updated++;
     }
     for (const bp of data.playlists || []) {
       if (playlists.some((p) => p.name === bp.name)) continue;
       const ids = (bp.tracks || []).map((k) => {
-        const t = byKey.get(keyOf(k));
+        const t = restoreLookup(k);
         return t ? t.id : null;
       }).filter((id) => id != null);
       await db.addPlaylist({ name: bp.name, trackIds: ids, createdAt: bp.createdAt || Date.now() });
@@ -816,6 +990,60 @@
   function closeSheet() {
     $("#sheet").classList.add("hidden");
     $("#backdrop").classList.add("hidden");
+  }
+
+  // ---------- Up next ----------
+  function queueTrackFor(id) {
+    const cur = player.state().track;
+    if (cur && cur.id === id) return cur;
+    return tracks.find((t) => t.id === id) || null;
+  }
+
+  function openQueue() {
+    const st = player.state();
+    if (!st.queue.length) { toast("Nothing queued yet"); return; }
+    const rows = st.queue.map((id, i) => {
+      const t = queueTrackFor(id);
+      const isNow = !!(st.track && st.track.id === id);
+      return `<div class="q-row${isNow ? " now" : ""}" data-q-play="${i}">
+        ${t ? artHTML(t, "width:40px;height:40px") : `<div class="art-ph" style="width:40px;height:40px">${NOTE_SVG}</div>`}
+        <div class="song-info">
+          <div class="song-title">${esc(t ? t.title : "Unavailable")}</div>
+          <div class="song-sub">${isNow ? "Playing now" : esc(t ? artistOf(t) : "")}</div>
+        </div>
+        <button class="icon-btn q-btn" data-q-up="${i}"${i === 0 ? " disabled" : ""} aria-label="Move up">${UP_SVG}</button>
+        <button class="icon-btn q-btn" data-q-down="${i}"${i === st.queue.length - 1 ? " disabled" : ""} aria-label="Move down">${DOWN_SVG}</button>
+        <button class="icon-btn q-btn q-del" data-q-del="${i}" aria-label="Remove from queue">${X_SVG}</button>
+      </div>`;
+    }).join("");
+
+    openSheet(`<div class="sheet-title">Up next <span class="q-count">${st.queue.length} song${st.queue.length === 1 ? "" : "s"}</span></div>
+      <div class="queue-list">${rows}</div>`);
+
+    const sheet = $("#sheet");
+    sheet.querySelectorAll("[data-q-play]").forEach((row) => (row.onclick = async (e) => {
+      if (e.target.closest(".q-btn")) return;
+      const i = Number(row.dataset.qPlay);
+      closeSheet();
+      if (player.state().index !== i) await player.playAt(i);
+    }));
+    sheet.querySelectorAll("[data-q-up]").forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation();
+      const i = Number(b.dataset.qUp);
+      player.queueMove(i, i - 1);
+      openQueue();
+    }));
+    sheet.querySelectorAll("[data-q-down]").forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation();
+      const i = Number(b.dataset.qDown);
+      player.queueMove(i, i + 1);
+      openQueue();
+    }));
+    sheet.querySelectorAll("[data-q-del]").forEach((b) => (b.onclick = async (e) => {
+      e.stopPropagation();
+      await player.queueRemove(Number(b.dataset.qDel));
+      if (player.state().queue.length) openQueue(); else closeSheet();
+    }));
   }
 
   function confirmSheet(title, body, okLabel, danger) {
@@ -1718,6 +1946,18 @@
       }));
       const sel = $("#lib-select");
       if (sel) sel.onclick = () => { selecting = !selecting; selected.clear(); render(); };
+      const sortBtn = $("#lib-sort");
+      if (sortBtn) sortBtn.onclick = openSortSheet;
+      const az = $("#az-strip");
+      if (az) az.querySelectorAll("[data-letter]").forEach((b) => (b.onclick = () => {
+        const letter = b.dataset.letter;
+        const rows = [...document.querySelectorAll("#lib-body .song-row")];
+        const row = rows.find((r) => {
+          const el = libSort === "artist" ? r.querySelector(".song-sub") : r.querySelector(".song-title");
+          return el && el.textContent.trim().toUpperCase().startsWith(letter);
+        });
+        if (row) row.scrollIntoView({ block: "start", behavior: "smooth" });
+      }));
       const tg = $("#lib-toggle");
       if (tg) tg.onclick = () => { libGrid = !libGrid; render(); };
       const plus = $("#lib-plus");
@@ -1778,6 +2018,7 @@
       fillStorageInfo();
       fillVersionInfo();
       fillDisplayInfo();
+      fillBackupInfo();
       $("#set-update").onclick = checkForUpdates;
       window.Lyra.lyricsSync?.mountSettings(v);
       db.getSetting("lyricsAutoScroll").then((v2) => { $("#set-autoscroll").checked = !!v2; });
@@ -1836,10 +2077,55 @@
       };
     });
 
+    let suppressMiniTap = false;
     mini.addEventListener("click", (e) => {
       if (e.target.closest("#mini-toggle") || e.target.closest("#mini-like")) return;
+      if (suppressMiniTap) { suppressMiniTap = false; return; }
       openNp();
     });
+
+    // Swipe the mini player left or right for next / previous; hold it for the
+    // Up next queue.
+    let mg = null;
+    mini.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1 || e.target.closest("button")) return;
+      const t = e.touches[0];
+      mg = { x: t.clientX, y: t.clientY, dx: 0, moved: false, held: false, timer: 0 };
+      mg.timer = setTimeout(() => {
+        if (!mg || mg.moved) return;
+        mg.held = true;
+        openQueue();
+      }, 520);
+    }, { passive: true });
+    mini.addEventListener("touchmove", (e) => {
+      if (!mg || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      mg.dx = t.clientX - mg.x;
+      if (Math.abs(mg.dx) > 8 || Math.abs(t.clientY - mg.y) > 8) {
+        mg.moved = true;
+        clearTimeout(mg.timer);
+      }
+      if (Math.abs(mg.dx) > Math.abs(t.clientY - mg.y)) {
+        mini.style.transform = `translateX(${Math.max(-70, Math.min(70, mg.dx))}px)`;
+      }
+    }, { passive: true });
+    const endMiniGesture = () => {
+      const g = mg;
+      mg = null;
+      if (!g) return;
+      clearTimeout(g.timer);
+      mini.style.transform = "";
+      if (g.held) {
+        suppressMiniTap = true;
+        setTimeout(() => { suppressMiniTap = false; }, 500);
+      } else if (g.moved && Math.abs(g.dx) > 40) {
+        suppressMiniTap = true;
+        setTimeout(() => { suppressMiniTap = false; }, 500);
+        if (g.dx < 0) player.next(true); else player.prev();
+      }
+    };
+    mini.addEventListener("touchend", endMiniGesture);
+    mini.addEventListener("touchcancel", endMiniGesture);
     mini.addEventListener("keydown", (e) => { if (e.key === "Enter") openNp(); });
     $("#mini-toggle").onclick = (e) => { e.stopPropagation(); player.toggle(); };
     $("#mini-like").onclick = (e) => { e.stopPropagation(); const t = currentTrack(); if (t) toggleLike(t.id); };
@@ -1852,6 +2138,7 @@
     $("#np-repeat").onclick = () => player.cycleRepeat();
     $("#np-like").onclick = () => { const t = currentTrack(); if (t) toggleLike(t.id); };
     $("#np-lyrics-card").onclick = () => { const t = currentTrack(); if (t) openLyrics(t.id); };
+    $("#np-queue").onclick = openQueue;
     $("#np-sleep").onclick = openSleepSheet;
     $("#np-trim").onclick = openTrimSheet;
 
@@ -1992,6 +2279,10 @@
 
   async function boot() {
     await refreshData();
+    try {
+      const savedSort = await db.getSetting("libSort");
+      if (savedSort && SORT_LABELS[savedSort]) libSort = savedSort;
+    } catch (e) { /* first run */ }
     window.Lyra.lyricsSync?.init();
     watchViewport();
     wireChrome();

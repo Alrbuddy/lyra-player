@@ -69,6 +69,9 @@
         <div class="np-sleep-badge hidden" id="np-sleep-badge"></div>
       </div>
       <div class="np-head-actions">
+        <button class="icon-btn" id="np-queue" aria-label="Up next">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/><path d="m16 14 3 3-3 3"/><path d="M19 17h-6"/></svg>
+        </button>
         <button class="icon-btn" id="np-sleep" aria-label="Sleep timer">
           <svg viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11z"/></svg>
         </button>
@@ -141,9 +144,10 @@
 <div id="backdrop" class="backdrop hidden"></div>
 <div id="sheet" class="sheet glass hidden" role="dialog"></div>
 
-<!-- Extensions only: a bare audio/* makes iOS offer the photo/camera sheet,
-     while an extension list goes straight to the Files app. -->
-<input type="file" id="file-input" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,.oga,.opus,.aiff,.aif,.alac,.mp4,.m4b" multiple hidden>
+<!-- No accept attribute at all. Any type hint (audio/* and even an extension
+     list) makes iOS offer Photo Library / Take Video; with no filter it goes
+     straight to the Files app. importFiles() filters by extension instead. -->
+<input type="file" id="file-input" multiple hidden>
 <input type="file" id="file-input-all" multiple hidden>
 <input type="file" id="restore-input" accept="application/json,.json" hidden>
 

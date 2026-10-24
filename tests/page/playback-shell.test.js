@@ -648,17 +648,200 @@ async function dragTouch(page, fromY, toY) {
       const any = document.getElementById("file-input-all");
       const lrcSource = document.querySelector('script[src="lyrics-sync.js"]');
       return {
-        audioAccept: audio.getAttribute("accept") || "",
+        audioAccept: audio.hasAttribute("accept") ? audio.getAttribute("accept") : null,
         audioMultiple: audio.multiple,
         anyAccept: any.getAttribute("accept"),
         hasLyricsScript: !!lrcSource,
       };
     });
-    assert.ok(!/audio\/\*/.test(info.audioAccept), "no wildcard media type (that is what offers Photos/camera)");
-    assert.ok(!/image\/|video\//.test(info.audioAccept), "no image or video types");
-    assert.match(info.audioAccept, /^\.mp3,/ , "an extension list starts the picker in Files");
+    assert.equal(info.audioAccept, null, "no accept attribute at all — any hint offers the photo sheet on iOS");
     assert.equal(info.audioMultiple, true, "multi-select still works");
     assert.equal(info.anyAccept, null, "the all-files input has no type filter either");
+  });
+
+  console.log("\nUp next, sorting, duplicates and backup");
+  await check("the Up next sheet lists the queue and can reorder and remove", async () => {
+    await seed(page, null);
+    const ids = await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      const extra = [];
+      for (const name of ["Second", "Third"]) {
+        extra.push(await Lyra.db.addTrack({
+          title: name, artist: base.artist, album: "", duration: 100,
+          audio: base.audio, addedAt: Date.now() + extra.length + 1, plays: 0, liked: false, lyrics: "",
+        }));
+      }
+      await Lyra.app.refreshData();
+      await Lyra.player.playQueue([base.id, ...extra], 0);
+      return [base.id, ...extra];
+    });
+    await page.waitForTimeout(400);
+    await page.evaluate(() => document.getElementById("np").classList.remove("hidden"));
+    await page.click("#np-queue");
+    await page.waitForTimeout(300);
+    const opened = await page.evaluate(() => ({
+      rows: document.querySelectorAll("#sheet .q-row").length,
+      title: (document.querySelector("#sheet .sheet-title") || {}).textContent || "",
+      now: document.querySelectorAll("#sheet .q-row.now").length,
+    }));
+    assert.equal(opened.rows, 3, "one row per queued song");
+    assert.match(opened.title, /Up next/);
+    assert.equal(opened.now, 1, "the playing song is marked");
+
+    await page.click('#sheet [data-q-down="0"]');
+    await page.waitForTimeout(250);
+    const moved = await page.evaluate(() => Lyra.player.state().queue.slice(0, 2));
+    assert.deepEqual(moved, [ids[1], ids[0]], "moving down swaps the two songs");
+
+    await page.click('#sheet [data-q-del="0"]');
+    await page.waitForTimeout(300);
+    const left = await page.evaluate(() => ({ len: Lyra.player.state().queue.length, rows: document.querySelectorAll("#sheet .q-row").length }));
+    assert.equal(left.len, 2, "removing a row drops it from the queue");
+    assert.equal(left.rows, 2, "the sheet redraws");
+    await page.evaluate(() => {
+      document.getElementById("sheet").classList.add("hidden");
+      document.getElementById("backdrop").classList.add("hidden");
+    });
+    await closeNp(page);
+  });
+
+  await check("sorting by title orders the list and survives a reload", async () => {
+    await page.evaluate(async () => {
+      await Lyra.db.clearAll();
+      const audio = Lyra.app.tracks[0] ? Lyra.app.tracks[0].audio : new Blob(["x"]);
+      for (const name of ["Cedar", "Apple", "Birch"]) {
+        await Lyra.db.addTrack({ title: name, artist: "Sort Artist", album: "", duration: 60, audio, addedAt: Math.random() * 1000, plays: 0 });
+      }
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(300);
+    await page.click("#lib-sort");
+    await page.waitForTimeout(250);
+    await page.click('#sheet [data-sort="title"]');
+    await page.waitForTimeout(400);
+    const sorted = await page.evaluate(() => ({
+      first: document.querySelector("#lib-body .song-title").textContent,
+      label: document.getElementById("lib-sort").textContent.trim(),
+      saved: null,
+    }));
+    assert.equal(sorted.first, "Apple", "title order starts at A");
+    assert.match(sorted.label, /Title A–Z/);
+    const saved = await page.evaluate(() => Lyra.db.getSetting("libSort"));
+    assert.equal(saved, "title", "the choice is remembered");
+  });
+
+  await check("a duplicate import is caught before it is added", async () => {
+    const res = await page.evaluate(async () => {
+      await Lyra.db.clearAll();
+      await Lyra.app.refreshData();
+      const sr = 8000, secs = 1, frames = sr * secs;
+      const buf = new ArrayBuffer(44 + frames * 2);
+      const dv = new DataView(buf);
+      const ws = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+      ws(0, "RIFF"); dv.setUint32(4, 36 + frames * 2, true); ws(8, "WAVE"); ws(12, "fmt ");
+      dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+      dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true);
+      dv.setUint16(34, 16, true); ws(36, "data"); dv.setUint32(40, frames * 2, true);
+      const file = new File([buf], "Duplicate Test.wav", { type: "audio/wav" });
+
+      await Lyra.app.importFiles([file]);
+      await new Promise((r) => setTimeout(r, 900));
+      const afterFirst = Lyra.app.tracks.length;
+      Lyra.app.importFiles([file]);
+      await new Promise((r) => setTimeout(r, 1200));
+      const title = (document.querySelector("#sheet .sheet-title") || {}).textContent || "";
+      const skip = document.getElementById("dup-skip");
+      if (skip) skip.click();
+      await new Promise((r) => setTimeout(r, 900));
+      return { afterFirst, afterSecond: Lyra.app.tracks.length, title };
+    });
+    assert.equal(res.afterFirst, 1, "the first import added the song");
+    assert.match(res.title, /Already in your library/, "the second import asks first");
+    assert.equal(res.afterSecond, 1, "skipping the duplicate adds nothing");
+  });
+
+  await check("without a recent backup the app offers a nudge", async () => {
+    const label = await page.evaluate(async () => {
+      await Lyra.app.go("settings");
+      await new Promise((r) => setTimeout(r, 500));
+      return document.getElementById("set-lastbackup").textContent;
+    });
+    assert.match(label, /Never|Last saved/);
+  });
+
+  await check("the backup carries edits and restores them onto a re-imported file", async () => {
+    const out = await page.evaluate(async () => {
+      const track = Lyra.app.tracks[0];
+      track.artistManual = "Yfg Fatso";
+      track.likeSet = true;
+      track.liked = true;
+      await Lyra.db.putTrack(track);
+      await Lyra.app.refreshData();
+
+      Object.defineProperty(navigator, "canShare", { value: () => true, configurable: true });
+      Object.defineProperty(navigator, "share", { value: async (d) => { window.__shared = d.files[0]; }, configurable: true });
+      await Lyra.app.exportBackup();
+      const text = await window.__shared.text();
+      const data = JSON.parse(text);
+      const saved = data.tracks[0];
+      const lastBackup = await Lyra.db.getSetting("lastBackupAt");
+
+      // Simulate a reinstall: nothing on the device, then the same file
+      // imported again with its original tags.
+      const audio = track.audio;
+      await Lyra.db.clearAll();
+      const id = await Lyra.db.addTrack({
+        title: track.title, artist: track.artist, album: "", duration: track.duration,
+        audio, addedAt: Date.now() + 9, plays: 0, liked: false, lyrics: "",
+      });
+      await Lyra.app.refreshData();
+      const backup = new File([text], "lyra-backup.json", { type: "application/json" });
+      await Lyra.app.restoreBackup(backup);
+      const restored = await Lyra.db.getTrack(id);
+      return {
+        exportedManual: saved.artistManual,
+        exportedSynced: "lyricsSynced" in saved,
+        restoredManual: restored && restored.artistManual,
+        restoredLiked: restored && restored.liked,
+        lastBackup,
+      };
+    });
+    assert.equal(out.exportedManual, "Yfg Fatso", "the edited artist is in the backup");
+    assert.equal(out.exportedSynced, true, "synced lyrics are in the backup");
+    assert.equal(out.restoredManual, "Yfg Fatso", "a re-imported file gets the edit back");
+    assert.equal(out.restoredLiked, true, "likes come back too");
+    assert.ok(out.lastBackup > 0, "the export is dated");
+  });
+
+  await check("swiping the mini player skips to the next song", async () => {
+    const ids = await page.evaluate(async () => {
+      await Lyra.db.clearAll();
+      const base = new Blob(["x"], { type: "audio/wav" });
+      const a = await Lyra.db.addTrack({ title: "Swipe A", artist: "S", album: "", duration: 90, audio: base, addedAt: 1, plays: 0 });
+      const b = await Lyra.db.addTrack({ title: "Swipe B", artist: "S", album: "", duration: 90, audio: base, addedAt: 2, plays: 0 });
+      await Lyra.app.refreshData();
+      await Lyra.player.playQueue([a, b], 0);
+      await new Promise((r) => setTimeout(r, 400));
+      return { a, b };
+    });
+    const out = await page.evaluate(async () => {
+      const mini = document.getElementById("mini");
+      const r = mini.getBoundingClientRect();
+      const y = Math.round(r.top + r.height / 2);
+      const mk = (x) => new Touch({ identifier: 21, target: mini, clientX: x, clientY: y });
+      const fire = (type, x, list) => mini.dispatchEvent(new TouchEvent(type, {
+        bubbles: true, cancelable: true,
+        touches: (list || []).map(mk), targetTouches: (list || []).map(mk), changedTouches: [mk(x)],
+      }));
+      fire("touchstart", 300, [300]);
+      for (let i = 1; i <= 5; i++) { fire("touchmove", 300 - i * 15, [300 - i * 15]); await new Promise((res) => setTimeout(res, 12)); }
+      fire("touchend", 225, []);
+      await new Promise((res) => setTimeout(res, 700));
+      return { id: Lyra.player.state().track.id, npHidden: document.getElementById("np").classList.contains("hidden") };
+    });
+    assert.equal(out.id, ids.b, "a left swipe moved to the next song");
+    assert.equal(out.npHidden, true, "and it did not open Now Playing");
   });
 
   console.log("\nGroq upload body");

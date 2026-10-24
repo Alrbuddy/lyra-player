@@ -483,6 +483,30 @@ input[type="range"]::-webkit-slider-thumb {
 }
 @keyframes sheet-up { from { transform: translateY(30px); opacity: 0; } to { transform: none; opacity: 1; } }
 .sheet-title { font-weight: 800; font-size: 16px; padding: 8px 12px 10px; }
+
+/* ---- Up next ---- */
+.queue-list { max-height: 48vh; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 2px; }
+.q-row { display: flex; align-items: center; gap: 8px; padding: 7px 6px; border-radius: 10px; }
+.q-row.now { background: rgba(29, 185, 84, 0.14); }
+.q-row .art, .q-row .art-ph { border-radius: 6px; flex: none; width: 40px; height: 40px; }
+.q-row .art-ph svg { width: 18px; height: 18px; }
+.q-row .song-title { font-size: 14.5px; }
+.q-row .song-sub { font-size: 12px; }
+.q-btn { width: 32px; height: 32px; min-width: 32px; min-height: 32px; }
+.q-btn svg { width: 18px; height: 18px; }
+.q-btn[disabled] { opacity: 0.22; }
+.q-del { color: #ff6b6b; }
+.q-count { font-size: 12px; font-weight: 500; color: var(--text-dim); margin-left: 6px; }
+.q-more { padding: 8px 10px; font-size: 12px; color: var(--text-dim); }
+
+/* ---- A–Z jump strip in Your Library ---- */
+.az-strip { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: none; }
+.az-strip::-webkit-scrollbar { display: none; }
+.az-btn {
+  min-width: 28px; min-height: 28px; padding: 0 8px; border-radius: 8px;
+  background: var(--surface2); color: var(--text-dim); font-size: 12px; font-weight: 700;
+}
+.az-btn:active { background: var(--surface3); color: #fff; }
 .sheet-item {
   display: flex; align-items: center; gap: 12px; width: 100%;
   padding: 12px; border-radius: var(--radius-sm); text-align: left; font-size: 15px; font-weight: 600;

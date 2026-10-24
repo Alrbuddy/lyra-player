@@ -246,6 +246,37 @@
       emit("queue", state());
     },
 
+    // ---- Queue editing (the Up next sheet) ----
+    queueMove(from, to) {
+      if (from === to || from < 0 || to < 0 || from >= queue.length || to >= queue.length) return;
+      const playing = queue[index];
+      const [id] = queue.splice(from, 1);
+      queue.splice(to, 0, id);
+      index = queue.indexOf(playing);
+      emit("queue", state());
+    },
+
+    async queueRemove(i) {
+      if (i < 0 || i >= queue.length) return;
+      const wasCurrent = i === index;
+      const playing = index >= 0 ? queue[index] : null;
+      const [removed] = queue.splice(i, 1);
+      const bi = baseQueue.indexOf(removed);
+      if (bi >= 0) baseQueue.splice(bi, 1);
+      if (wasCurrent) {
+        index = Math.min(i, queue.length - 1);
+        if (index >= 0) {
+          const track = await window.Lyra.db.getTrack(queue[index]);
+          if (track) await loadTrack(track, true);
+        } else {
+          player.stop();
+        }
+      } else {
+        index = queue.indexOf(playing);
+      }
+      emit("queue", state());
+    },
+
     async playNext(id) {
       if (index < 0) {
         return player.playQueue([id], 0);
