@@ -13,7 +13,7 @@
   --glass-radius: 20px;
   --spring: cubic-bezier(0.32, 1.4, 0.4, 1);
   --ease: cubic-bezier(0.25, 0.9, 0.3, 1);
-  --nav-h: 64px;
+  --nav-h: 66px;
   --mini-h: 56px;
 }
 
@@ -209,7 +209,17 @@ input, textarea { user-select: text; -webkit-user-select: text; font: inherit; }
 .import-progress { background: var(--surface); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 12px; }
 .import-line { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--text-dim); padding: 3px 0; }
 .import-line .ok { color: var(--accent); }
+.import-line .bad { color: #ff8a8a; }
 .import-summary { font-weight: 700; margin-top: 8px; }
+.import-hint {
+  background: var(--surface); border-left: 3px solid var(--accent);
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;
+  font-size: 13px; color: var(--text-dim); line-height: 1.45;
+}
+.link-btn {
+  display: block; width: 100%; text-align: center; color: var(--accent-active);
+  font-size: 13px; font-weight: 600; padding: 2px 0 16px; min-height: 34px;
+}
 
 /* ---- Settings ---- */
 .set-row {
@@ -259,33 +269,44 @@ input[type="range"]::-webkit-slider-thumb {
 .play-fab:active { transform: scale(0.92); background: var(--accent-active); }
 .play-fab svg { width: 24px; height: 24px; fill: #000; margin-left: 2px; }
 
-/* ---- Bottom nav ---- */
+/* ---- Bottom nav (iOS liquid glass capsule) ---- */
 .nav {
-  position: fixed; left: 12px; right: 12px;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
-  height: var(--nav-h); border-radius: var(--glass-radius);
+  position: fixed; left: 10px; right: 10px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+  height: var(--nav-h); border-radius: 26px; padding: 5px; gap: 2px;
   display: flex; z-index: 40;
+  background: rgba(28, 28, 30, 0.5);
+  -webkit-backdrop-filter: blur(32px) saturate(180%);
+  backdrop-filter: blur(32px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 .nav-btn {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 3px; color: var(--text-dim); font-size: 10.5px; font-weight: 600;
-  border-radius: var(--glass-radius); min-width: 0; min-height: 0;
+  gap: 3px; color: rgba(255, 255, 255, 0.58); font-size: 10px; font-weight: 600;
+  border-radius: 21px; min-width: 0; min-height: 0;
+  transition: background 0.22s var(--ease), color 0.22s;
 }
 .nav-btn svg {
-  width: 24px; height: 24px; fill: none; stroke: currentColor;
+  width: 23px; height: 23px; fill: none; stroke: currentColor;
   stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
-  transition: filter 0.2s, color 0.2s;
+  transition: color 0.2s;
 }
-.nav-btn.on { color: #fff; }
-.nav-btn.on svg { filter: drop-shadow(0 0 6px rgba(29, 185, 84, 0.8)); }
+.nav-btn.on {
+  color: var(--accent-active);
+  background: rgba(255, 255, 255, 0.11);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
 
 /* ---- Mini player ---- */
 .mini {
-  position: fixed; left: 12px; right: 12px;
-  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 20px);
-  height: var(--mini-h); border-radius: var(--glass-radius);
+  position: fixed; left: 10px; right: 10px;
+  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 18px);
+  height: var(--mini-h); border-radius: 22px;
   display: flex; align-items: center; gap: 10px; padding: 0 6px 0 8px;
   z-index: 41; overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   transition: transform 0.25s var(--spring), opacity 0.2s;
 }
 .mini.pop { transform: scale(1.03); }

@@ -373,6 +373,7 @@
         <span class="t">Files</span>
         <span class="d">Import tracks from your phone. Pick one or many audio files from the Files app.</span>
       </button>
+      <button class="link-btn" id="imp-files-all">Songs greyed out in the picker? Browse all files</button>
       <button class="big-card" id="imp-computer">
         <span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
         <span class="t">From my computer</span>
@@ -386,6 +387,14 @@
       <div id="import-out"></div></div>`;
   }
 
+  const AUDIO_EXT = /\.(mp3|m4a|aac|wav|flac|ogg|oga|opus|aiff|aif|weba)$/i;
+
+  function isAudioFile(file) {
+    if (/^audio\//.test(file.type)) return true;
+    // iOS often reports no type (or video/mp4 for .m4a) — trust the extension
+    return AUDIO_EXT.test(file.name);
+  }
+
   async function importFiles(fileList) {
     const out = $("#import-out");
     const files = [...fileList];
@@ -393,15 +402,15 @@
     let imported = 0, skipped = 0;
     if (out) out.innerHTML = `<div class="import-progress" id="imp-prog"></div>`;
     const prog = $("#imp-prog");
-    const line = (txt, ok) => {
+    const line = (txt, status) => {
       if (prog) prog.insertAdjacentHTML("beforeend",
-        `<div class="import-line"><span>${esc(txt)}</span><span class="${ok ? "ok" : ""}">${ok ? "added" : "skipped"}</span></div>`);
+        `<div class="import-line"><span>${esc(txt)}</span><span class="${status === "added" ? "ok" : "bad"}">${status}</span></div>`);
     };
 
     let persisted = false;
     for (const file of files) {
-      if (!/^audio\//.test(file.type) && !/\.(mp3|m4a|wav|flac|aac|ogg|mp4)$/i.test(file.name)) {
-        skipped++; line(file.name, false); continue;
+      if (!isAudioFile(file)) {
+        skipped++; line(file.name, "not audio"); continue;
       }
       try {
         const [tags, duration] = await Promise.all([
@@ -414,18 +423,20 @@
           plays: 0, liked: false, lyrics: "",
           art: tags.art, audio: file,
         });
-        imported++; line(tags.title, true);
+        imported++; line(tags.title, "added");
         if (!persisted) {
           persisted = true;
           if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
         }
       } catch (e) {
-        skipped++; line(file.name, false);
+        skipped++; line(file.name, "couldn't read");
       }
     }
     await refreshData();
     if (prog) prog.insertAdjacentHTML("beforeend",
       `<div class="import-summary">${imported} song${imported === 1 ? "" : "s"} imported${skipped ? `, ${skipped} skipped` : ""}</div>`);
+    if (out && !imported) out.insertAdjacentHTML("afterbegin",
+      `<div class="import-hint">Nothing was imported. If the picker would not let you select your songs, try “Browse all files”.</div>`);
     toast(`${imported} imported${skipped ? `, ${skipped} skipped` : ""}`);
   }
 
@@ -776,7 +787,7 @@
     const t = currentTrack();
     if (!t) return;
     const c = await dominantColor(t);
-    mini.style.background = `linear-gradient(${rgba(c, 0.45)}, ${rgba(c, 0.25)}), rgba(20,20,20,0.62)`;
+    mini.style.background = `linear-gradient(${rgba(c, 0.5)}, ${rgba(c, 0.3)}), rgba(30,30,32,0.55)`;
   }
 
   async function tintNp() {
@@ -1137,6 +1148,7 @@
 
     if (view === "import") {
       $("#imp-files").onclick = () => $("#file-input").click();
+      $("#imp-files-all").onclick = () => $("#file-input-all").click();
       $("#imp-restore").onclick = () => $("#restore-input").click();
       $("#imp-computer").onclick = () => {
         openSheet(`<div class="sheet-title">From my computer</div>
@@ -1245,13 +1257,15 @@
 
     $("#backdrop").onclick = closeSheet;
 
-    $("#file-input").addEventListener("change", (e) => {
+    const onFilesPicked = (e) => {
       const files = [...e.target.files]; // FileList is live — copy before clearing
       e.target.value = "";
       if (!files.length) return;
       if (route.view !== "import") go("import", {}, false);
       importFiles(files);
-    });
+    };
+    $("#file-input").addEventListener("change", onFilesPicked);
+    $("#file-input-all").addEventListener("change", onFilesPicked);
     $("#restore-input").addEventListener("change", (e) => {
       const file = e.target.files[0];
       e.target.value = "";
