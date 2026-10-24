@@ -457,6 +457,24 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .sheet-actions { display: flex; gap: 10px; justify-content: flex-end; padding: 0 12px 6px; }
 
+/* ---- Artist & album sheet ---- */
+.edit-fields { padding: 2px 12px 4px; }
+.edit-field { display: block; margin-bottom: 14px; }
+.edit-field > span {
+  display: block; font-size: 12.5px; font-weight: 600;
+  color: var(--text-dim); letter-spacing: 0.3px; margin-bottom: 6px;
+}
+.edit-field .edit-opt { font-weight: 400; color: rgba(255, 255, 255, 0.35); }
+.edit-field input {
+  width: 100%; min-height: 46px; padding: 12px 14px; font-size: 16px;
+  color: var(--text); background: var(--surface3);
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px;
+  outline: none; -webkit-appearance: none; appearance: none;
+}
+.edit-field input:focus { border-color: var(--accent); }
+.edit-field input::placeholder { color: rgba(255, 255, 255, 0.28); }
+.edit-note { font-size: 12.5px; line-height: 1.45; color: var(--text-dim); margin: 0 0 10px; }
+
 /* ---- Sleep timer sheet ---- */
 .sheet-note { margin: 0 16px 14px; color: var(--text-dim); font-size: 14px; line-height: 1.45; text-align: center; }
 .sheet-note.on { color: var(--accent-active); font-weight: 600; }

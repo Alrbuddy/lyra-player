@@ -98,26 +98,94 @@
 
   async function refreshData() {
     [tracks, playlists] = await Promise.all([db.getAllTracks(), db.getAllPlaylists()]);
+    recomputeAlbumKeys();
   }
 
-  function albumsOf(list) {
-    const map = new Map();
-    list.forEach((t) => {
-      const key = t.album || "Unknown Album";
-      if (!map.has(key)) map.set(key, { name: key, tracks: [] });
-      map.get(key).tracks.push(t);
-    });
-    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  // Album keys that count as real albums (recomputed whenever the library changes,
+  // so listing songs does not rescan every track for every row).
+  let realAlbumKeys = new Set();
+  function recomputeAlbumKeys() {
+    const counts = new Map();
+    for (const t of tracks) {
+      const name = albumName(t);
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const prev = counts.get(key);
+      counts.set(key, { n: (prev ? prev.n : 0) + 1, manual: (prev ? prev.manual : false) || !!t.albumManual });
+    }
+    realAlbumKeys = new Set();
+    counts.forEach((v, key) => { if (v.n >= 2 || v.manual) realAlbumKeys.add(key); });
   }
+
+  // ---------- Artists & albums ----------
+  // Downloaded files have unreliable tags: "Unknown Artist", or the same name
+  // padded/cased differently per file. Group on a normalized key and show the
+  // spelling you set yourself, otherwise the most common one.
+  const UNKNOWN_ARTIST = "Unknown Artist";
+  const UNKNOWN_ALBUM = "Unknown Album";
+
+  function tagName(v) { return String(v == null ? "" : v).trim(); }
+
+  function pickDisplayName(counts, fallback) {
+    let best = fallback, bestCount = 0;
+    counts.forEach((n, name) => {
+      if (n > bestCount || (n === bestCount && name.localeCompare(best) < 0)) {
+        best = name;
+        bestCount = n;
+      }
+    });
+    return best;
+  }
+
+  // "Unknown Album" and empty are the same thing: no album.
+  function albumName(t) {
+    const name = tagName(t && t.album);
+    if (!name || name.toLowerCase() === UNKNOWN_ALBUM.toLowerCase()) return "";
+    return name;
+  }
+
+  function groupTracks(list, nameOf, manualFlag) {
+    const map = new Map();
+    for (const t of list) {
+      const name = nameOf(t);
+      const key = name.toLowerCase();
+      let g = map.get(key);
+      if (!g) map.set(key, (g = { key, names: new Map(), tracks: [], manual: "" }));
+      g.tracks.push(t);
+      g.names.set(name, (g.names.get(name) || 0) + 1);
+      if (manualFlag && t[manualFlag]) g.manual = name;
+    }
+    return [...map.values()].map((g) => ({
+      key: g.key,
+      // A name you typed yourself wins over whatever the dominant tag spelling is.
+      name: g.manual || pickDisplayName(g.names, [...g.names.keys()][0] || ""),
+      tracks: g.tracks,
+    }));
+  }
+
+  function artistOf(t) { return tagName(t && t.artist) || UNKNOWN_ARTIST; }
 
   function artistsOf(list) {
-    const map = new Map();
-    list.forEach((t) => {
-      const key = t.artist || "Unknown Artist";
-      if (!map.has(key)) map.set(key, { name: key, tracks: [] });
-      map.get(key).tracks.push(t);
-    });
-    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return groupTracks(list, artistOf, "artistManual").sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // One song with a stray album tag is not an album — showing those made a
+  // duplicate single-song album per download. An album counts when at least
+  // two songs share it, or when you named it yourself on a track.
+  function albumsOf(list) {
+    const groups = groupTracks(list.filter((t) => albumName(t)), albumName, "albumManual");
+    const out = groups.map((g) => ({
+      ...g,
+      manual: g.tracks.some((t) => t.albumManual),
+    }));
+    return out
+      .filter((g) => g.tracks.length >= 2 || g.manual)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function isRealAlbum(t) {
+    const name = albumName(t);
+    return !!name && realAlbumKeys.has(name.toLowerCase());
   }
 
   // ---------- Router ----------
@@ -183,7 +251,7 @@
       ${check}${artHTML(t)}
       <div class="song-info">
         <div class="song-title ${isCur ? "playing" : ""}">${esc(t.title)}</div>
-        <div class="song-sub">${esc(t.artist)}${t.album ? " • " + esc(t.album) : ""}</div>
+        <div class="song-sub">${esc(artistOf(t))}${isRealAlbum(t) ? " • " + esc(albumName(t)) : ""}</div>
       </div>
       ${eq}
       <div class="song-meta"><span>${fmtTime(t.duration)}</span><span>${t.plays || 0} plays</span></div>
@@ -559,11 +627,13 @@
       return { title: p.name, list: p.trackIds.map((id) => tracks.find((t) => t.id === id)).filter(Boolean), pl: p };
     }
     if (params.kind === "album") {
-      const list = tracks.filter((t) => (t.album || "Unknown Album") === params.name);
+      const key = String(params.name || "").toLowerCase();
+      const list = tracks.filter((t) => albumName(t).toLowerCase() === key);
       return { title: params.name, list };
     }
     if (params.kind === "artist") {
-      const list = tracks.filter((t) => (t.artist || "Unknown Artist") === params.name);
+      const key = String(params.name || "").toLowerCase();
+      const list = tracks.filter((t) => artistOf(t).toLowerCase() === key);
       return { title: params.name, list };
     }
     if (params.kind === "liked") {
@@ -725,6 +795,7 @@
       <button class="sheet-item" data-act="pl">${PLUS_SVG}Add to playlist</button>
       <button class="sheet-item" data-act="like">${HEART_SVG}${t.liked ? "Remove like" : "Like"}</button>
       <button class="sheet-item" data-act="lyrics"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 10h16M4 14h10M4 18h7"/></svg>Edit lyrics</button>
+      <button class="sheet-item" data-act="info"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>Artist &amp; album</button>
       <button class="sheet-item" data-act="rename"><svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>Rename</button>
       <button class="sheet-item danger" data-act="del"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15"/></svg>Delete</button>`);
     $("#sheet").querySelectorAll("[data-act]").forEach((b) => {
@@ -735,6 +806,7 @@
         else if (act === "pl") addToPlaylistSheet([t.id]);
         else if (act === "like") await toggleLike(t.id);
         else if (act === "lyrics") openLyricsEditor(t.id);
+        else if (act === "info") editInfoSheet(t);
         else if (act === "rename") {
           const name = await promptSheet("Rename", "Title");
           if (name) { t.title = name; await db.putTrack(t); await refreshData(); render(); }
@@ -745,6 +817,72 @@
         }
       };
     });
+  }
+
+  // Set the artist / album by hand (downloads often have neither).
+  async function editInfoSheet(t) {
+    const artistNames = artistsOf(tracks).map((a) => a.name).filter((n) => n !== UNKNOWN_ARTIST);
+    const albumNames = albumsOf(tracks).map((a) => a.name);
+    const options = (names) => names.map((n) => `<option value="${esc(n)}"></option>`).join("");
+    const currentArtist = artistOf(t) === UNKNOWN_ARTIST ? "" : artistOf(t);
+
+    openSheet(`<div class="sheet-title">Artist &amp; album</div>
+      <div class="edit-fields">
+        <label class="edit-field" for="ef-artist"><span>Artist</span>
+          <input id="ef-artist" type="text" list="ef-artists" autocomplete="off" autocapitalize="words" enterkeyhint="next"
+            value="${esc(currentArtist)}" placeholder="e.g. YFG Fatso">
+        </label>
+        <label class="edit-field" for="ef-album"><span>Album <span class="edit-opt">optional</span></span>
+          <input id="ef-album" type="text" list="ef-albums" autocomplete="off" autocapitalize="words" enterkeyhint="done"
+            value="${esc(albumName(t))}" placeholder="Leave empty for none">
+        </label>
+        <datalist id="ef-artists">${options(artistNames)}</datalist>
+        <datalist id="ef-albums">${options(albumNames)}</datalist>
+        <div class="edit-note">Songs that share an artist are grouped under Artists. An album only appears in Albums when two or more songs share it, or when you name it here.</div>
+      </div>
+      <div class="sheet-actions">
+        <button class="btn ghost" id="ef-cancel">Cancel</button>
+        <button class="btn primary" id="ef-save">Save</button>
+      </div>`);
+
+    const artistInput = $("#ef-artist");
+    const albumInput = $("#ef-album");
+    $("#ef-cancel").onclick = () => closeSheet();
+    artistInput.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); albumInput.focus(); }
+    };
+    albumInput.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); $("#ef-save").click(); }
+    };
+
+    $("#ef-save").onclick = async () => {
+      const artist = tagName(artistInput.value) || UNKNOWN_ARTIST;
+      const album = tagName(albumInput.value);
+      closeSheet();
+      if (artist === artistOf(t) && album === albumName(t)) return;
+      t.artist = artist;
+      t.artistManual = artist !== UNKNOWN_ARTIST;
+      t.album = album;
+      t.albumManual = !!album;
+      await db.putTrack(t);
+      await refreshData();
+      // If this song is the one loaded in the player, update it in place too.
+      const cur = player.state().track;
+      if (cur && cur.id === t.id) {
+        const fresh = tracks.find((x) => x.id === t.id) || t;
+        cur.artist = fresh.artist;
+        cur.artistManual = fresh.artistManual;
+        cur.album = fresh.album;
+        cur.albumManual = fresh.albumManual;
+        updatePlayerUI();
+        if (player.refreshMediaSession) player.refreshMediaSession();
+      }
+      render();
+      toast("Saved");
+    };
+
+    artistInput.focus();
+    artistInput.setSelectionRange(artistInput.value.length, artistInput.value.length);
   }
 
   async function deleteTrack(id) {
@@ -1573,6 +1711,9 @@
     get tracks() { return tracks; },
     get playlists() { return playlists; },
     refreshData,
-    _test: { viewLibrary, viewHome, viewSearch, dominantColor, searchResults, detailData },
+    _test: {
+      viewLibrary, viewHome, viewSearch, dominantColor, searchResults, detailData,
+      artistsOf, albumsOf, albumName, artistOf, isRealAlbum, editInfoSheet, trackMenu,
+    },
   };
 })();

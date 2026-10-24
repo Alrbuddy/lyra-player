@@ -250,6 +250,11 @@
       emit("state", state());
       return repeat;
     },
+
+    // Metadata was edited for the loaded track — refresh the lock screen card.
+    refreshMediaSession() {
+      if (current) updateMediaSession(current);
+    },
   };
 
   audio.addEventListener("play", () => {
