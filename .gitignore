@@ -1,0 +1,14 @@
+# Audio files — songs live only on the device
+*.mp3
+*.m4a
+*.wav
+*.flac
+*.aac
+*.ogg
+
+# Tooling
+node_modules/
+dev/
+*.log
+.DS_Store
+Thumbs.db

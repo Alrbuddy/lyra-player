@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#121212">
+<title>Lyra</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<main id="view" aria-live="polite"></main>
+
+<!-- Mini player -->
+<div id="mini" class="mini glass hidden" role="button" tabindex="0" aria-label="Open now playing">
+  <div class="mini-art" id="mini-art"></div>
+  <div class="mini-info">
+    <div class="mini-title" id="mini-title"></div>
+    <div class="mini-artist" id="mini-artist"></div>
+  </div>
+  <button class="icon-btn" id="mini-like" aria-label="Like"></button>
+  <button class="icon-btn" id="mini-toggle" aria-label="Play or pause"></button>
+  <div class="mini-progress" id="mini-progress"><i></i></div>
+</div>
+
+<!-- Bottom nav -->
+<nav id="nav" class="nav glass">
+  <button class="nav-btn" data-tab="home" aria-label="Home">
+    <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z"/></svg>
+    <span>Home</span>
+  </button>
+  <button class="nav-btn" data-tab="search" aria-label="Search">
+    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <span>Search</span>
+  </button>
+  <button class="nav-btn" data-tab="library" aria-label="Your Library">
+    <svg viewBox="0 0 24 24"><path d="M4 4v16M9 4v16M14 4l4 16"/></svg>
+    <span>Your Library</span>
+  </button>
+  <button class="nav-btn" data-tab="import" aria-label="Import">
+    <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+    <span>Import</span>
+  </button>
+</nav>
+
+<!-- Now Playing sheet -->
+<section id="np" class="np hidden" aria-label="Now playing">
+  <div class="np-drag" id="np-drag">
+    <div class="np-top">
+      <button class="icon-btn" id="np-close" aria-label="Close now playing">
+        <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="np-source" id="np-source">Playing from Library</div>
+      <div class="np-top-spacer"></div>
+    </div>
+    <div class="np-cover-wrap"><div class="np-cover" id="np-cover"></div></div>
+    <div class="np-meta">
+      <div class="np-text">
+        <div class="np-title" id="np-title"></div>
+        <div class="np-artist" id="np-artist"></div>
+      </div>
+      <button class="icon-btn" id="np-like" aria-label="Like"></button>
+    </div>
+    <div class="np-seek" id="np-seek">
+      <div class="np-seek-fill" id="np-seek-fill"><i><div class="np-seek-dot"></div></i></div>
+    </div>
+    <div class="np-times">
+      <span id="np-elapsed">0:00</span><span id="np-remain">-0:00</span>
+    </div>
+    <div class="np-controls">
+      <button class="icon-btn" id="np-shuffle" aria-label="Shuffle"></button>
+      <button class="icon-btn" id="np-prev" aria-label="Previous">
+        <svg viewBox="0 0 24 24"><path d="M6 5v14M20 5l-11 7 11 7z"/></svg>
+      </button>
+      <button class="np-play" id="np-play" aria-label="Play or pause"></button>
+      <button class="icon-btn" id="np-next" aria-label="Next">
+        <svg viewBox="0 0 24 24"><path d="M18 5v14M4 5l11 7-11 7z"/></svg>
+      </button>
+      <button class="icon-btn" id="np-repeat" aria-label="Repeat"></button>
+    </div>
+    <button class="np-lyrics-card" id="np-lyrics-card">
+      <span class="np-lyrics-label">Lyrics</span>
+      <span class="np-lyrics-preview" id="np-lyrics-preview"></span>
+    </button>
+  </div>
+</section>
+
+<!-- Full-screen lyrics -->
+<section id="lyrics" class="lyrics hidden" aria-label="Lyrics">
+  <div class="lyrics-top">
+    <button class="icon-btn" id="lyrics-close" aria-label="Close lyrics">
+      <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+    <div class="lyrics-heading" id="lyrics-heading">Lyrics</div>
+    <button class="icon-btn" id="lyrics-edit" aria-label="Edit lyrics">
+      <svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>
+    </button>
+  </div>
+  <div class="lyrics-scroll" id="lyrics-scroll"><div class="lyrics-text" id="lyrics-text"></div></div>
+  <div class="lyrics-autoscroll" id="lyrics-autoscroll-bar">
+    <label class="switch-row">
+      <span>Auto-scroll</span>
+      <input type="checkbox" id="lyrics-autoscroll">
+    </label>
+    <input type="range" id="lyrics-speed" min="10" max="120" value="40" aria-label="Auto-scroll speed">
+  </div>
+  <div class="lyrics-editor hidden" id="lyrics-editor">
+    <textarea id="lyrics-textarea" placeholder="Paste lyrics here…" rows="10"></textarea>
+    <div class="lyrics-editor-actions">
+      <button class="btn ghost" id="lyrics-cancel">Cancel</button>
+      <button class="btn primary" id="lyrics-save">Save</button>
+    </div>
+  </div>
+</section>
+
+<!-- Generic bottom sheet + backdrop -->
+<div id="backdrop" class="backdrop hidden"></div>
+<div id="sheet" class="sheet glass hidden" role="dialog"></div>
+
+<input type="file" id="file-input" accept="audio/*" multiple hidden>
+<input type="file" id="restore-input" accept="application/json,.json" hidden>
+
+<div id="toast" class="toast hidden"></div>
+
+<script defer src="vendor/jsmediatags.min.js"></script>
+<script defer src="db.js"></script>
+<script defer src="id3.js"></script>
+<script defer src="player.js"></script>
+<script defer src="app.js"></script>
+</body>
+</html>
