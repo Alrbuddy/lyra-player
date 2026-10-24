@@ -141,7 +141,9 @@
 <div id="backdrop" class="backdrop hidden"></div>
 <div id="sheet" class="sheet glass hidden" role="dialog"></div>
 
-<input type="file" id="file-input" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.oga,.opus,.aiff,.aif" multiple hidden>
+<!-- Extensions only: a bare audio/* makes iOS offer the photo/camera sheet,
+     while an extension list goes straight to the Files app. -->
+<input type="file" id="file-input" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,.oga,.opus,.aiff,.aif,.alac,.mp4,.m4b" multiple hidden>
 <input type="file" id="file-input-all" multiple hidden>
 <input type="file" id="restore-input" accept="application/json,.json" hidden>
 

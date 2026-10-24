@@ -642,6 +642,25 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(info.overflowX, "hidden");
   });
 
+  await check("the import picker opens the Files app, not the photo sheet", async () => {
+    const info = await page.evaluate(() => {
+      const audio = document.getElementById("file-input");
+      const any = document.getElementById("file-input-all");
+      const lrcSource = document.querySelector('script[src="lyrics-sync.js"]');
+      return {
+        audioAccept: audio.getAttribute("accept") || "",
+        audioMultiple: audio.multiple,
+        anyAccept: any.getAttribute("accept"),
+        hasLyricsScript: !!lrcSource,
+      };
+    });
+    assert.ok(!/audio\/\*/.test(info.audioAccept), "no wildcard media type (that is what offers Photos/camera)");
+    assert.ok(!/image\/|video\//.test(info.audioAccept), "no image or video types");
+    assert.match(info.audioAccept, /^\.mp3,/ , "an extension list starts the picker in Files");
+    assert.equal(info.audioMultiple, true, "multi-select still works");
+    assert.equal(info.anyAccept, null, "the all-files input has no type filter either");
+  });
+
   console.log("\nGroq upload body");
   await check("uploadFileFrom sends a sized File with a safe audio filename", async () => {
     const out = await page.evaluate(async () => {
