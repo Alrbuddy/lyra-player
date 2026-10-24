@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.0";
+  const APP_VERSION = "1.4.1";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -1815,9 +1815,38 @@
   player.on("needqueue", () => toast("Pick a song first"));
 
   // ---------- Boot ----------
+  // ---------- Viewport ----------
+  // iOS sizes the layout viewport and the visual viewport separately: on a cold
+  // start, and whenever Safari chrome slides in or out, fixed chrome can end up
+  // outside the part you can actually see. Lift the bars by that difference and
+  // size the scrolling shell to the visible height, so what you see is what you
+  // can tap.
+  function syncViewport() {
+    const root = document.documentElement;
+    const vv = window.visualViewport;
+    if (!vv) { root.style.setProperty("--vv-lift", "0px"); return; }
+    const hidden = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
+    root.style.setProperty("--vv-lift", Math.round(hidden) + "px");
+    root.style.setProperty("--app-h", Math.round(vv.height) + "px");
+  }
+
+  function watchViewport() {
+    syncViewport();
+    window.addEventListener("resize", syncViewport, { passive: true });
+    window.addEventListener("orientationchange", () => {
+      syncViewport();
+      setTimeout(syncViewport, 300);
+    });
+    // Deliberately not listening to visualViewport resize/scroll: the keyboard
+    // also moves that viewport, and the bars should stay put while typing.
+    // A cold start on iOS can report the wrong height for a moment.
+    [50, 300, 900, 1500].forEach((ms) => setTimeout(syncViewport, ms));
+  }
+
   async function boot() {
     await refreshData();
     window.Lyra.lyricsSync?.init();
+    watchViewport();
     wireChrome();
     render();
     // Restore a sleep timer that was still running when the app was closed.
@@ -1848,7 +1877,8 @@
     _test: {
       viewLibrary, viewHome, viewSearch, dominantColor, searchResults, detailData,
       artistsOf, albumsOf, albumName, artistOf, isRealAlbum, editInfoSheet, trackMenu,
-      versionLabel, newestVersion, installedBuild, latestBuild,
+      versionLabel, newestVersion, installedBuild, latestBuild, syncViewport,
+      get appVersion() { return APP_VERSION; },
     },
   };
 })();

@@ -333,6 +333,34 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(info.wide, false, "no element spills past the right edge");
   });
 
+  await check("the body is not pinned, and the shell fills the visible height", async () => {
+    const info = await page.evaluate(() => ({
+      bodyPos: getComputedStyle(document.body).position,
+      lift: getComputedStyle(document.documentElement).getPropertyValue("--vv-lift").trim(),
+      viewH: document.querySelector("#view").getBoundingClientRect().height,
+      innerH: window.innerHeight,
+    }));
+    assert.notEqual(info.bodyPos, "fixed", "a fixed body is what offset taps on iOS");
+    assert.ok(info.lift === "0px" || info.lift === "", "no lift needed here, got " + info.lift);
+    assert.ok(Math.abs(info.viewH - info.innerH) <= 1, "shell is " + info.viewH + " of " + info.innerH);
+  });
+
+  await check("a viewport mismatch lifts both bars by exactly that much", async () => {
+    const out = await page.evaluate(() => {
+      const nav = () => document.querySelector(".nav").getBoundingClientRect().bottom;
+      const mini = () => document.querySelector(".mini").getBoundingClientRect().bottom;
+      const pad = () => parseFloat(getComputedStyle(document.querySelector("#view")).paddingBottom);
+      const before = { nav: nav(), mini: mini(), pad: pad() };
+      document.documentElement.style.setProperty("--vv-lift", "40px");
+      const after = { nav: nav(), mini: mini(), pad: pad() };
+      document.documentElement.style.setProperty("--vv-lift", "0px");
+      return { nav: Math.round(before.nav - after.nav), mini: Math.round(before.mini - after.mini), pad: Math.round(after.pad - before.pad) };
+    });
+    assert.equal(out.nav, 40, "tab bar lifts with the viewport");
+    assert.equal(out.mini, 40, "mini player lifts with it");
+    assert.equal(out.pad, 40, "content padding follows so nothing hides underneath");
+  });
+
   await check("zoom is disabled for the viewport and the shell", async () => {
     const info = await page.evaluate(() => ({
       meta: document.querySelector('meta[name="viewport"]').getAttribute("content"),
