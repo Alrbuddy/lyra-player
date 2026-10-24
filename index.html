@@ -31,6 +31,7 @@
 
 <!-- Bottom nav -->
 <nav id="nav" class="nav glass">
+  <div class="tab-pill" id="tab-pill" aria-hidden="true"></div>
   <button class="nav-btn" data-tab="home" aria-label="Home">
     <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z"/></svg>
     <span>Home</span>
@@ -53,11 +54,23 @@
 <section id="np" class="np hidden" aria-label="Now playing">
   <div class="np-drag" id="np-drag">
     <div class="np-top">
-      <button class="icon-btn" id="np-close" aria-label="Close now playing">
-        <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
-      </button>
-      <div class="np-source" id="np-source">Playing from Library</div>
-      <div class="np-top-spacer"></div>
+      <div class="np-top-left">
+        <button class="icon-btn" id="np-close" aria-label="Close now playing">
+          <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+      <div class="np-head-mid">
+        <div class="np-source" id="np-source">Playing from Library</div>
+        <div class="np-sleep-badge hidden" id="np-sleep-badge"></div>
+      </div>
+      <div class="np-head-actions">
+        <button class="icon-btn" id="np-sleep" aria-label="Sleep timer">
+          <svg viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11z"/></svg>
+        </button>
+        <button class="icon-btn" id="np-trim" aria-label="Set song start and end">
+          <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M20 4 8.2 15.8M14.6 14.6 20 20M8.2 8.2 12 12"/></svg>
+        </button>
+      </div>
     </div>
     <div class="np-cover-wrap"><div class="np-cover" id="np-cover"></div></div>
     <div class="np-meta">
@@ -68,7 +81,7 @@
       <button class="icon-btn" id="np-like" aria-label="Like"></button>
     </div>
     <div class="np-seek" id="np-seek">
-      <div class="np-seek-fill" id="np-seek-fill"><i><div class="np-seek-dot"></div></i></div>
+      <div class="np-seek-fill" id="np-seek-fill"><div class="np-seek-zone hidden" id="np-seek-zone"></div><i><div class="np-seek-dot"></div></i></div>
     </div>
     <div class="np-times">
       <span id="np-elapsed">0:00</span><span id="np-remain">-0:00</span>

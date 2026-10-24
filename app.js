@@ -136,6 +136,16 @@
     render();
   }
 
+  // Liquid-glass tab highlight: slide the pill to the active tab.
+  function positionTabPill() {
+    const pill = $("#tab-pill");
+    if (!pill) return;
+    const i = Array.from(document.querySelectorAll(".nav-btn"))
+      .findIndex((b) => b.classList.contains("on"));
+    pill.classList.toggle("off", i < 0);
+    if (i >= 0) pill.style.transform = `translateX(${i * 100}%)`;
+  }
+
   function applyRender() {
     const v = $("#view");
     if (route.view === "home") v.innerHTML = viewHome();
@@ -147,6 +157,7 @@
     bindView(route.view);
     document.querySelectorAll(".nav-btn").forEach((b) =>
       b.classList.toggle("on", b.dataset.tab === route.view));
+    positionTabPill();
     v.scrollTop = 0;
   }
 
@@ -787,7 +798,7 @@
     const t = currentTrack();
     if (!t) return;
     const c = await dominantColor(t);
-    mini.style.background = `linear-gradient(${rgba(c, 0.5)}, ${rgba(c, 0.3)}), rgba(30,30,32,0.55)`;
+    mini.style.background = `linear-gradient(${rgba(c, 0.5)}, ${rgba(c, 0.3)}), rgba(38,38,40,0.55)`;
   }
 
   async function tintNp() {
@@ -832,6 +843,8 @@
     tintMini();
     tintNp();
     updateProgress();
+    renderSleepBadge();
+    renderNpTrimZone();
     if (route.view === "library" && libFilter === "songs") render();
   }
 
@@ -852,6 +865,238 @@
   }
   function closeNp() {
     np.classList.add("hidden");
+  }
+
+  // ---------- Sleep timer ----------
+  const SLEEP_KEY = "sleepUntil";
+  let sleepUntil = 0;
+  let sleepTick = null;
+
+  function sleepLeft() {
+    return Math.max(0, Math.round((sleepUntil - Date.now()) / 1000));
+  }
+
+  function renderSleepBadge() {
+    const badge = $("#np-sleep-badge");
+    const btn = $("#np-sleep");
+    const on = sleepUntil > Date.now();
+    if (btn) btn.classList.toggle("active", on);
+    if (!badge) return;
+    if (!on) {
+      badge.classList.add("hidden");
+      badge.textContent = "";
+      return;
+    }
+    badge.classList.remove("hidden");
+    badge.textContent = "Sleep in " + fmtTime(sleepLeft());
+  }
+
+  function stopSleepTimer(silent) {
+    sleepUntil = 0;
+    if (sleepTick) { clearInterval(sleepTick); sleepTick = null; }
+    db.setSetting(SLEEP_KEY, 0).catch(() => {});
+    renderSleepBadge();
+    if (!silent) toast("Sleep timer stopped");
+  }
+
+  function armSleepTick() {
+    if (sleepTick) clearInterval(sleepTick);
+    sleepTick = setInterval(() => {
+      renderSleepBadge();
+      if (Date.now() < sleepUntil) return;
+      if (player.state().playing) player.audio.pause();
+      stopSleepTimer(true);
+      toast("Sleep timer ended");
+    }, 1000);
+  }
+
+  function startSleepTimer(seconds) {
+    sleepUntil = Date.now() + seconds * 1000;
+    db.setSetting(SLEEP_KEY, sleepUntil).catch(() => {});
+    armSleepTick();
+    renderSleepBadge();
+    toast("Sleep timer set for " + fmtTime(seconds));
+  }
+
+  // Scroll-wheel picker used by the sleep timer sheet.
+  function wheelHTML(id, count) {
+    let items = "";
+    for (let i = 0; i < count; i++) {
+      items += `<div class="wheel-item" data-v="${i}">${String(i).padStart(2, "0")}</div>`;
+    }
+    return `<div class="wheel" id="${id}" role="listbox" aria-label="${id}">
+      <div class="wheel-spacer"></div>${items}<div class="wheel-spacer"></div>
+    </div>`;
+  }
+
+  function wireWheel(id, initial) {
+    const el = $("#" + id);
+    if (!el) return;
+    const items = [...el.querySelectorAll(".wheel-item")];
+    const paint = () => {
+      const i = Math.min(items.length - 1, Math.max(0, Math.round(el.scrollTop / 32)));
+      items.forEach((it, n) => it.classList.toggle("on", n === i));
+      el.dataset.value = String(i);
+    };
+    el.addEventListener("scroll", () => {
+      clearTimeout(el._t);
+      el._t = setTimeout(paint, 40);
+    }, { passive: true });
+    el.addEventListener("scrollend", paint);
+    el.addEventListener("pointerup", () => setTimeout(paint, 80));
+    el.addEventListener("touchend", () => setTimeout(paint, 80), { passive: true });
+    items.forEach((it, n) => {
+      it.addEventListener("click", () => el.scrollTo({ top: n * 32, behavior: "smooth" }));
+    });
+    el.scrollTop = Math.max(0, Math.min(items.length - 1, initial || 0)) * 32;
+    paint();
+  }
+
+  function wheelValue(id) {
+    const el = $("#" + id);
+    if (!el) return 0;
+    const n = el.querySelectorAll(".wheel-item").length;
+    return Math.min(n - 1, Math.max(0, Math.round(el.scrollTop / 32)));
+  }
+
+  function openSleepSheet() {
+    const left = sleepLeft();
+    openSheet(`<div class="sheet-title">Sleep timer</div>
+      <p class="sheet-note">Set the time and the player will turn off automatically.</p>
+      <div class="pickers">
+        <div class="picker"><span class="picker-label">Hour:</span>${wheelHTML("sleep-h", 13)}</div>
+        <div class="picker"><span class="picker-label">Minutes:</span>${wheelHTML("sleep-m", 60)}</div>
+      </div>
+      ${left > 0 ? `<p class="sheet-note on">Timer running — ${fmtTime(left)} left</p>` : ""}
+      <div class="sheet-actions">
+        <button class="btn ghost" id="sleep-stop">Stop Timer</button>
+        <button class="btn primary" id="sleep-start">Start Timer</button>
+      </div>`);
+    wireWheel("sleep-h", left > 0 ? Math.floor(left / 3600) : 0);
+    wireWheel("sleep-m", left > 0 ? Math.floor((left % 3600) / 60) : 0);
+    $("#sleep-start").onclick = () => {
+      const total = wheelValue("sleep-h") * 3600 + wheelValue("sleep-m") * 60;
+      if (!total) { toast("Set an hour or minutes first"); return; }
+      closeSheet();
+      startSleepTimer(total);
+    };
+    $("#sleep-stop").onclick = () => { closeSheet(); stopSleepTimer(); };
+  }
+
+  // ---------- Per-song start / end points ----------
+  function openTrimSheet() {
+    const t = currentTrack();
+    if (!t) { toast("Play a song first"); return; }
+    const dur = Math.floor(player.state().duration || t.duration || 0);
+    if (!(dur > 1)) { toast("Still loading — try again"); return; }
+    let s = Math.min(Math.max(0, Number(t.startAt) || 0), dur - 1);
+    let e = Number(t.endAt) > 0 ? Math.min(Number(t.endAt), dur) : dur;
+    if (e <= s) e = Math.min(dur, s + 1);
+
+    openSheet(`<div class="sheet-title">Start &amp; end</div>
+      <p class="sheet-note">Drag the handles to choose where this song always starts and stops.</p>
+      <div class="trim-wrap">
+        <div class="trim-track" id="trim-track">
+          <div class="trim-range" id="trim-range"></div>
+          <button class="trim-handle" id="trim-h-start" aria-label="Start of song"></button>
+          <button class="trim-handle" id="trim-h-end" aria-label="End of song"></button>
+        </div>
+        <div class="trim-times">
+          <span id="trim-start-label">${fmtTime(s)}</span>
+          <span class="mid">${fmtTime(dur)}</span>
+          <span id="trim-end-label">${fmtTime(e)}</span>
+        </div>
+      </div>
+      <div class="sheet-actions">
+        <button class="btn ghost" id="trim-reset">Reset</button>
+        <button class="btn primary" id="trim-save">Save</button>
+      </div>`);
+
+    const track = $("#trim-track");
+    const hs = $("#trim-h-start");
+    const he = $("#trim-h-end");
+    const paint = () => {
+      const ps = (s / dur) * 100;
+      const pe = (e / dur) * 100;
+      hs.style.left = ps + "%";
+      he.style.left = pe + "%";
+      $("#trim-range").style.left = ps + "%";
+      $("#trim-range").style.width = Math.max(0, pe - ps) + "%";
+      $("#trim-start-label").textContent = fmtTime(s);
+      $("#trim-end-label").textContent = fmtTime(e);
+    };
+    paint();
+
+    const posFromX = (x) => {
+      const r = track.getBoundingClientRect();
+      return Math.min(dur, Math.max(0, ((x - r.left) / r.width) * dur));
+    };
+    const setFrom = (which, x) => {
+      const v = posFromX(x);
+      if (which === "s") s = Math.min(v, e - 1);
+      else e = Math.max(v, s + 1);
+      paint();
+    };
+    const beginDrag = (which) => (ev) => {
+      ev.preventDefault();
+      const move = (mv) => setFrom(which, mv.clientX);
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+      };
+      window.addEventListener("pointermove", move, { passive: false });
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
+    };
+    hs.addEventListener("pointerdown", beginDrag("s"));
+    he.addEventListener("pointerdown", beginDrag("e"));
+    track.addEventListener("pointerdown", (ev) => {
+      if (ev.target === hs || ev.target === he) return;
+      setFrom(Math.abs(posFromX(ev.clientX) - s) <= Math.abs(posFromX(ev.clientX) - e) ? "s" : "e", ev.clientX);
+    });
+
+    $("#trim-reset").onclick = () => { s = 0; e = dur; paint(); };
+    $("#trim-save").onclick = async () => {
+      closeSheet();
+      await saveTrim(t.id, s, e, dur);
+    };
+  }
+
+  async function saveTrim(id, s, e, dur) {
+    const t = tracks.find((x) => x.id === id) || (await db.getTrack(id));
+    if (!t) return;
+    const startAt = s > 0.5 ? Math.round(s * 10) / 10 : 0;
+    const endAt = e < dur - 0.5 ? Math.round(e * 10) / 10 : 0;
+    t.startAt = startAt;
+    t.endAt = endAt;
+    await db.putTrack(t);
+    const cur = player.state().track;
+    if (cur && cur.id === id) {
+      cur.startAt = startAt;
+      cur.endAt = endAt;
+      if (startAt && player.state().currentTime < startAt) player.seek(startAt);
+    }
+    await refreshData();
+    renderNpTrimZone();
+    toast(startAt || endAt ? `Trim saved: ${fmtTime(startAt)} – ${fmtTime(endAt || dur)}` : "Trim cleared");
+  }
+
+  function renderNpTrimZone() {
+    const zone = $("#np-seek-zone");
+    if (!zone) return;
+    const st = player.state();
+    const t = st.track;
+    const dur = st.duration || (t && t.duration) || 0;
+    const s = Number(t && t.startAt) || 0;
+    const e = Number(t && t.endAt) || 0;
+    if (!t || !dur || (!s && !e)) {
+      zone.classList.add("hidden");
+      return;
+    }
+    zone.classList.remove("hidden");
+    zone.style.left = (s / dur) * 100 + "%";
+    zone.style.width = Math.max(0, (((e || dur) - s) / dur) * 100) + "%";
   }
 
   // drag-to-dismiss + scrub
@@ -1224,6 +1469,8 @@
     $("#np-repeat").onclick = () => player.cycleRepeat();
     $("#np-like").onclick = () => { const t = currentTrack(); if (t) toggleLike(t.id); };
     $("#np-lyrics-card").onclick = () => { const t = currentTrack(); if (t) openLyrics(t.id); };
+    $("#np-sleep").onclick = openSleepSheet;
+    $("#np-trim").onclick = openTrimSheet;
 
     $("#lyrics-close").onclick = closeLyrics;
     $("#lyrics-edit").onclick = () => {
@@ -1293,6 +1540,13 @@
     await refreshData();
     wireChrome();
     render();
+    // Restore a sleep timer that was still running when the app was closed.
+    try {
+      const saved = Number(await db.getSetting(SLEEP_KEY)) || 0;
+      if (saved > Date.now()) { sleepUntil = saved; armSleepTick(); }
+      else if (saved) db.setSetting(SLEEP_KEY, 0);
+    } catch (e) { /* first run */ }
+    renderSleepBadge();
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("sw.js").catch(() => {});
     }

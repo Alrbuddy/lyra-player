@@ -28,6 +28,28 @@
     return index >= 0 && index < queue.length ? queue[index] : null;
   }
 
+  // Per-song start / end points (seconds). 0 / null means "no trim".
+  function startOf(track) {
+    const s = Number(track && track.startAt) || 0;
+    return s > 0 ? s : 0;
+  }
+
+  function endOf(track) {
+    const e = Number(track && track.endAt) || 0;
+    return e > 0 ? e : 0;
+  }
+
+  let endingSegment = false;
+
+  function seekToStart() {
+    const s = startOf(current);
+    if (!(s > 0)) return;
+    const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+    const target = dur ? Math.min(s, Math.max(0, dur - 0.2)) : s;
+    try { audio.currentTime = target; } catch (e) { return; }
+    lastTick = target;
+  }
+
   const artUrls = new Map(); // track id -> object URL, kept for Media Session artwork
 
   function artUrlFor(track) {
@@ -49,6 +71,7 @@
     if (track) {
       currentUrl = URL.createObjectURL(track.audio);
       audio.src = currentUrl;
+      audio.addEventListener("loadedmetadata", seekToStart, { once: true });
       updateMediaSession(track);
     } else {
       audio.removeAttribute("src");
@@ -173,7 +196,7 @@
     async next(manual) {
       if (!queue.length) return;
       if (repeat === "one" && !manual) {
-        audio.currentTime = 0;
+        audio.currentTime = startOf(current);
         try { await audio.play(); } catch (e) {}
         return;
       }
@@ -187,8 +210,9 @@
 
     async prev() {
       if (!queue.length) return;
-      if (audio.currentTime > 3) {
-        audio.currentTime = 0;
+      const lo = startOf(current);
+      if (audio.currentTime > lo + 3) {
+        audio.currentTime = lo;
         return;
       }
       let i = index - 1;
@@ -198,7 +222,10 @@
 
     seek(t) {
       if (!current) return;
-      audio.currentTime = Math.max(0, Math.min(t, state().duration || 0));
+      const lo = startOf(current);
+      const end = endOf(current);
+      const hi = end > 0 ? end : (state().duration || 0);
+      audio.currentTime = Math.max(lo, Math.min(t, hi));
       emit("time", state());
     },
 
@@ -239,12 +266,33 @@
     lastTick = now;
     if (playedSeconds >= 30) countPlay();
     emit("time", state());
+    const end = endOf(current);
+    if (end > 0 && !audio.paused && now >= end - 0.06) finishSegment();
   });
   audio.addEventListener("seeked", () => { lastTick = audio.currentTime || 0; });
   audio.addEventListener("ended", () => {
     countPlay();
     player.next(false);
   });
+
+  // Reached this song's end point: advance exactly like a natural finish.
+  async function finishSegment() {
+    if (endingSegment) return;
+    endingSegment = true;
+    const id = currentId();
+    countPlay();
+    try {
+      await player.next(false);
+      // At the end of the queue with repeat off nothing advanced — stop here.
+      const end = endOf(current);
+      if (currentId() === id && end > 0 && audio.currentTime >= end - 0.06) {
+        audio.pause();
+        try { audio.currentTime = end; } catch (e) {}
+      }
+    } finally {
+      endingSegment = false;
+    }
+  }
   audio.addEventListener("durationchange", () => emit("time", state()));
 
   if ("mediaSession" in navigator) {
