@@ -1,5 +1,5 @@
 /* Lyra service worker — cache-first, fully offline. Bump VERSION after any cached-file change. */
-const VERSION = "v14";
+const VERSION = "v15";
 const CACHE = "lyra-" + VERSION;
 
 const ASSETS = [

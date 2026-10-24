@@ -59,35 +59,69 @@
   }
 
   let loadToken = 0;
+  let errorRetries = 0;
+  let endHandled = false;
+  // iOS keeps reporting the previous song's position for a moment after the
+  // source changes; until the new source has metadata, the honest answer is
+  // the new song's start point.
+  let awaitingMeta = false;
+
+  // The blob URL of the outgoing song is revoked a few seconds after the
+  // switch rather than immediately: revoking the source iOS is still holding
+  // can leave the element silent until the app is reloaded.
+  function revokeSoon(url) {
+    if (!url) return;
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 8000);
+  }
+
+  // Resolves when the element can actually play (or after a short wait).
+  function waitUntilReady(ms) {
+    return new Promise((resolve) => {
+      const events = ["loadedmetadata", "loadeddata", "canplay", "canplaythrough"];
+      let done = false;
+      let timer = 0;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        events.forEach((ev) => audio.removeEventListener(ev, finish));
+        resolve();
+      };
+      events.forEach((ev) => audio.addEventListener(ev, finish));
+      timer = setTimeout(finish, ms);
+      if (audio.readyState >= 2) finish();
+    });
+  }
 
   // Starting a song is the fragile part on iOS: a play() promise that is still
-  // pending when the source changes rejects with AbortError, and revoking the
-  // blob URL of the song that is playing can leave the element silent. Pause
-  // first, swap the source, then play with one retry when the new source is
-  // actually ready.
+  // pending when the source changes rejects with AbortError, and a rejection
+  // just after a source swap leaves the element paused with nothing retrying
+  // it. Retry against the element itself instead of waiting for one event that
+  // may already have fired.
   async function startPlayback(token) {
-    if (token !== loadToken) return;
-    try {
-      await audio.play();
-    } catch (e) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       if (token !== loadToken) return;
-      if (e && (e.name === "AbortError" || e.name === "NotAllowedError")) {
-        audio.addEventListener("canplay", () => {
-          if (token === loadToken) audio.play().catch(() => emit("state", state()));
-        }, { once: true });
+      try {
+        await audio.play();
         return;
+      } catch (e) {
+        if (token !== loadToken) return; // a newer load owns playback now
+        if (e && e.name === "AbortError") continue; // superseded: loop exits above
+        await waitUntilReady(attempt === 0 ? 700 : 400);
+        if (token !== loadToken) return;
       }
-      emit("state", state());
     }
+    if (token === loadToken) emit("state", state());
   }
 
   async function loadTrack(track, autoplay) {
     const token = ++loadToken;
-    audio.pause();
-    if (currentUrl) {
-      URL.revokeObjectURL(currentUrl);
-      currentUrl = null;
-    }
+    endHandled = false;
+    errorRetries = 0;
+    awaitingMeta = !!track;
+    try { audio.pause(); } catch (e) { /* nothing to pause */ }
+    const old = currentUrl;
+    currentUrl = null;
     current = track;
     if (track) track.artUrl = artUrlFor(track);
     playCounted = false;
@@ -100,10 +134,10 @@
       audio.addEventListener("loadedmetadata", seekToStart, { once: true });
       updateMediaSession(track);
     } else {
-      audio.removeAttribute("src");
-      audio.load();
+      try { audio.removeAttribute("src"); audio.load(); } catch (e) { /* ignore */ }
       if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
     }
+    revokeSoon(old);
     emit("track", track);
     emit("time", state());
     if (track && autoplay) await startPlayback(token);
@@ -134,7 +168,7 @@
       shuffle,
       repeat,
       playing: !audio.paused && !audio.ended,
-      currentTime: audio.currentTime || 0,
+      currentTime: awaitingMeta ? startOf(current) : (audio.currentTime || 0),
       duration: Number.isFinite(audio.duration) ? audio.duration : (current ? current.duration || 0 : 0),
     };
   }
@@ -187,6 +221,13 @@
       // Tapping the song that is already loaded should not rebuild the audio
       // source: pause/resume it instead (re-tapping used to stall playback).
       if (current && current.id === currentId()) {
+        // …unless the element is wedged (a failed decode, a source that never
+        // loaded). Then rebuilding it is the only way back to sound.
+        if (audio.error || (audio.readyState === 0 && audio.currentSrc)) {
+          await loadTrack(current, true);
+          emit("queue", state());
+          return;
+        }
         // A finished song should start over rather than sit at the end.
         const dur = Number.isFinite(audio.duration) ? audio.duration : 0;
         if (audio.ended || (dur && audio.currentTime >= dur - 0.15)) {
@@ -222,13 +263,39 @@
       if (track) await loadTrack(track, true);
     },
 
+    // Used when the loaded song is deleted: leaving a deleted record (and its
+    // blob) on the element would let a later import that reuses the id look
+    // like "this song is already loaded".
+    stop() {
+      ++loadToken;
+      endHandled = true;
+      awaitingMeta = false;
+      try { audio.pause(); } catch (e) { /* nothing playing */ }
+      const old = currentUrl;
+      currentUrl = null;
+      try { audio.removeAttribute("src"); audio.load(); } catch (e) { /* ignore */ }
+      revokeSoon(old);
+      current = null;
+      queue = [];
+      baseQueue = [];
+      index = -1;
+      playedSeconds = 0;
+      lastTick = 0;
+      if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
+      emit("track", null);
+      emit("state", state());
+    },
+
     async toggle() {
       if (!current) {
         emit("needqueue");
         return;
       }
       if (audio.paused) {
-        try { await audio.play(); } catch (e) { /* user gesture required */ }
+        // Same retry path as a fresh load: a single rejected play() used to
+        // leave the button showing play with nothing happening.
+        if (audio.error || (audio.readyState === 0 && audio.currentSrc)) await loadTrack(current, true);
+        else await startPlayback(loadToken);
       } else {
         audio.pause();
       }
@@ -306,7 +373,9 @@
     if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
     emit("state", state());
   });
+  audio.addEventListener("loadedmetadata", () => { awaitingMeta = false; });
   audio.addEventListener("timeupdate", () => {
+    awaitingMeta = false;
     const now = audio.currentTime || 0;
     if (lastTick && now > lastTick) playedSeconds += now - lastTick;
     lastTick = now;
@@ -316,9 +385,32 @@
     if (end > 0 && !audio.paused && now >= end - 0.06) finishSegment();
   });
   audio.addEventListener("seeked", () => { lastTick = audio.currentTime || 0; });
-  audio.addEventListener("ended", () => {
+
+  // Reached the end: count the play and move on. Guarded so the ended event
+  // and the watchdog below can never advance twice for one song.
+  async function handleEnded() {
+    if (!current || endHandled) return;
+    endHandled = true;
     countPlay();
-    player.next(false);
+    try { await player.next(false); } catch (e) { /* keep the UI consistent */ }
+    emit("state", state());
+  }
+  audio.addEventListener("ended", handleEnded);
+  // iOS sometimes drops `ended` (an interruption, a pause on the last frame),
+  // which left the app sitting on a finished song. Poll the element's own flag.
+  setInterval(() => { if (current && audio.ended) handleEnded(); }, 1000);
+
+  // A spurious decode error right after a source swap: reload the same URL
+  // twice before giving up, instead of staying silent until a reload.
+  audio.addEventListener("error", () => {
+    if (!current || !audio.error || errorRetries >= 2) return;
+    errorRetries++;
+    const token = loadToken;
+    setTimeout(() => {
+      if (token !== loadToken) return;
+      try { audio.load(); } catch (e) { return; }
+      audio.play().catch(() => {});
+    }, 300);
   });
 
   // Reached this song's end point: advance exactly like a natural finish.

@@ -1,6 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#121212"/>
-  <g transform="translate(96 96) scale(0.625)">
-    <path d="M180 96v211.1c-13.7-6.7-29.7-9.5-46-8.1-35.4 3-62 29.4-62 60.9s26.6 57.9 62 60.9c37.3 3.2 66-26.4 66-62.9V176l140-28v147.1c-13.7-6.7-29.7-9.5-46-8.1-35.4 3-62 29.4-62 60.9s26.6 57.9 62 60.9c37.3 3.2 66-26.4 66-62.9V64l-180 32z" fill="#1DB954"/>
-  </g>
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="32%" r="74%">
+      <stop offset="0%" stop-color="#245437"/>
+      <stop offset="52%" stop-color="#15281b"/>
+      <stop offset="100%" stop-color="#0d0d0d"/>
+    </radialGradient>
+    <linearGradient id="note" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2BE07A"/>
+      <stop offset="100%" stop-color="#1DB954"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="#0d0d0d"/>
+  <rect width="512" height="512" fill="url(#glow)"/>
+  <path transform="translate(108.25 111.01) scale(0.8487)" d="M180 96v211.1c-13.7-6.7-29.7-9.5-46-8.1-35.4 3-62 29.4-62 60.9s26.6 57.9 62 60.9c37.3 3.2 66-26.4 66-62.9V176l140-28v147.1c-13.7-6.7-29.7-9.5-46-8.1-35.4 3-62 29.4-62 60.9s26.6 57.9 62 60.9c37.3 3.2 66-26.4 66-62.9V64l-180 32z" fill="url(#note)"/>
 </svg>

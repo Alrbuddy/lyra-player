@@ -171,7 +171,7 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(info.seekChildren, 1, "the seek row holds only the bar");
     assert.equal(info.fillHeight, "5px");
     assert.equal(info.fillRadius, "999px");
-    assert.ok(info.bar.bottom - info.bar.top === 26, "seek row still a 26px touch target");
+    assert.ok(info.bar.bottom - info.bar.top === 34, "seek row is a 34px touch target");
   });
 
   await check("an untrimmed song leaves the scissors button plain", async () => {
@@ -289,6 +289,150 @@ async function dragTouch(page, fromY, toY) {
     await page.evaluate((id) => document.querySelector(`#lib-body [data-play-track="${id}"]`).click(), id);
     await page.waitForTimeout(600);
     assert.equal(await page.evaluate(() => Lyra.player.state().playing), true);
+  });
+
+  console.log("\nPlayback handoff");
+  await check("tapping songs in quick succession still leaves sound playing", async () => {
+    await seed(page, null);
+    const ids = await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      const second = await Lyra.db.addTrack({
+        title: "Second Song", artist: base.artist, album: "", duration: 100,
+        audio: base.audio, addedAt: Date.now() + 5, plays: 0, liked: false, lyrics: "",
+      });
+      await Lyra.app.refreshData();
+      return [base.id, second];
+    });
+
+    // A, then B before A has finished starting, then A again.
+    await page.evaluate((ids) => Lyra.player.playQueue(ids, 0), ids);
+    await page.evaluate((ids) => Lyra.player.playQueue(ids, 1), ids);
+    await page.waitForTimeout(120);
+    await page.evaluate((ids) => Lyra.player.playQueue(ids, 0), ids);
+    await page.waitForTimeout(900);
+    const a = await page.evaluate(() => ({
+      id: Lyra.player.state().track.id,
+      t: Lyra.player.audio.currentTime,
+      paused: Lyra.player.audio.paused,
+      err: Lyra.player.audio.error ? Lyra.player.audio.error.code : 0,
+    }));
+    await page.waitForTimeout(700);
+    const b = await page.evaluate(() => ({ t: Lyra.player.audio.currentTime, paused: Lyra.player.audio.paused }));
+    assert.equal(a.id, ids[0], "the last song tapped is the one loaded");
+    assert.equal(a.err, 0, "no media error on the element");
+    assert.equal(a.paused, false, "the element is playing");
+    assert.equal(b.paused, false, "and it is still playing a moment later");
+    assert.ok(b.t > a.t, "the clock is advancing (" + a.t + " → " + b.t + ")");
+  });
+
+  await check("a finished song moves on to the next one", async () => {
+    const ids = await page.evaluate(() => {
+      const st = Lyra.player.state();
+      return st.queue.length >= 2 ? [st.queue[0], st.queue[1]] : [];
+    });
+    assert.equal(ids.length, 2, "two songs in the queue");
+    await page.evaluate((ids) => Lyra.player.playQueue(ids, 0), ids);
+    await page.waitForTimeout(500);
+    await page.evaluate(() => Lyra.player.seek(Lyra.player.state().duration - 0.35));
+    const advanced = await page.evaluate((ids) => new Promise((resolve) => {
+      const t0 = performance.now();
+      const tick = () => {
+        if (Lyra.player.state().track.id === ids[1]) return resolve(true);
+        if (performance.now() - t0 > 6000) return resolve(false);
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }), ids);
+    assert.equal(advanced, true, "the player moved to the next track by itself");
+    const after = await page.evaluate(() => ({ playing: Lyra.player.state().playing, paused: Lyra.player.audio.paused }));
+    assert.equal(after.playing, true, "and it started the next song");
+  });
+
+  await check("dragging the timeline scrubs without moving or scrolling the sheet", async () => {
+    await seed(page, { lyrics: "Line one of the fixture\nLine two of the fixture", lyricsSynced: {
+      lines: [
+        { t: 0, end: 10, text: "Line one of the fixture", words: [] },
+        { t: 10, end: 20, text: "Line two of the fixture", words: [] },
+        { t: 20, end: 30, text: "Line three of the fixture", words: [] },
+      ],
+      matchRate: 1, source: "fixture", createdAt: Date.now(),
+    } });
+    await openNp(page);
+    await page.evaluate(() => { document.getElementById("np-drag").scrollTop = 0; });
+
+    const info = await page.evaluate(async () => {
+      const seek = document.getElementById("np-seek");
+      const r = seek.getBoundingClientRect();
+      const y = Math.round(r.top + r.height / 2);
+      const x0 = r.left + r.width * 0.2;
+      const x1 = r.left + r.width * 0.7;
+      const mk = (x) => new Touch({ identifier: 11, target: seek, clientX: x, clientY: y });
+      const fire = (type, x, list) => seek.dispatchEvent(new TouchEvent(type, {
+        bubbles: true, cancelable: true,
+        touches: (list || []).map(mk), targetTouches: (list || []).map(mk), changedTouches: [mk(x)],
+      }));
+      fire("touchstart", x0, [x0]);
+      for (let i = 1; i <= 5; i++) {
+        const x = x0 + ((x1 - x0) * i) / 5;
+        fire("touchmove", x, [x]);
+        await new Promise((res) => setTimeout(res, 12));
+      }
+      fire("touchend", x1, []);
+      await new Promise((res) => setTimeout(res, 220));
+      return {
+        transform: document.getElementById("np").style.transform,
+        hidden: document.getElementById("np").classList.contains("hidden"),
+        scrollTop: document.getElementById("np-drag").scrollTop,
+        fill: document.getElementById("np-seek-fill").firstElementChild.style.width,
+        time: Lyra.player.state().currentTime,
+        duration: Lyra.player.state().duration,
+      };
+    });
+    assert.equal(info.hidden, false, "the sheet stayed open");
+    assert.equal(info.transform, "", "the sheet was not dragged down");
+    assert.equal(info.scrollTop, 0, "the sheet was not scrolled");
+    assert.match(info.fill, /70(\.\d+)?%/, "the bar followed the finger");
+    assert.ok(Math.abs(info.time - info.duration * 0.7) < info.duration * 0.12,
+      "the song jumped to the touched position (" + Math.round(info.time) + "s)");
+  });
+
+  await check("the lyrics card previews the line that is playing", async () => {
+    // Force a reload: clearing the store reuses track id 1, which the player
+    // would otherwise treat as "this song is already loaded".
+    await page.evaluate(() => Lyra.player.playAt(0));
+    await page.waitForTimeout(500);
+    const first = await page.evaluate(() => document.getElementById("np-lyrics-preview").textContent);
+    await page.evaluate(() => Lyra.player.seek(12));
+    await page.waitForTimeout(300);
+    const later = await page.evaluate(() => document.getElementById("np-lyrics-preview").textContent);
+    const lyricsHidden = await page.evaluate(() => document.getElementById("lyrics").classList.contains("hidden"));
+    await closeNp(page);
+    assert.equal(first, "Line one of the fixture\nLine two of the fixture", "first line plus the next one, got " + JSON.stringify(first));
+    assert.equal(later, "Line two of the fixture\nLine three of the fixture", "preview follows playback");
+    assert.equal(lyricsHidden, true, "…without opening the full lyrics view");
+  });
+
+  await check("the Home Screen icon is a real, opaque image", async () => {
+    const icon = await page.evaluate(async () => {
+      const img = new Image();
+      img.src = "icons/apple-touch-icon.png";
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      let green = 0, bright = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 1] > 110 && d[i + 1] > d[i] + 25) green++;
+        if (d[i] + d[i + 1] + d[i + 2] > 120) bright++;
+      }
+      return { w: img.naturalWidth, h: img.naturalHeight, green, bright };
+    });
+    assert.equal(icon.w, 180, "iOS reads a 180x180 tile");
+    assert.equal(icon.h, 180);
+    assert.ok(icon.green > 400, "the green note is really drawn (" + icon.green + " px)");
+    assert.ok(icon.bright > 400, "the tile is not a black square");
   });
 
   console.log("\nDetail play button");

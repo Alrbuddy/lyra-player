@@ -411,7 +411,7 @@ input[type="range"]::-webkit-slider-thumb {
 .np-text { flex: 1; min-width: 0; }
 .np-title { font-size: 21px; font-weight: 800; letter-spacing: -0.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .np-artist { color: rgba(255,255,255,0.72); font-size: 15px; margin-top: 2px; }
-.np-seek { position: relative; height: 26px; display: flex; align-items: center; margin-top: 12px; cursor: pointer; touch-action: none; }
+.np-seek { position: relative; height: 34px; display: flex; align-items: center; margin-top: 12px; cursor: pointer; touch-action: none; -webkit-user-select: none; user-select: none; }
 .np-seek .np-seek-fill { position: relative; z-index: 1; height: 5px; width: 100%; background: rgba(255,255,255,0.22); border-radius: 999px; overflow: visible; }
 .np-seek-fill i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: #fff; border-radius: 999px; display: block; }
 .np-seek-dot {
@@ -432,13 +432,21 @@ input[type="range"]::-webkit-slider-thumb {
 .np-play:active { transform: scale(0.92); }
 .np-play svg { width: 28px; height: 28px; fill: #000; }
 .np-lyrics-card {
-  margin-top: 20px; border-radius: var(--radius); padding: 14px 16px; min-height: 84px;
+  margin-top: 20px; border-radius: var(--radius); padding: 14px 16px; min-height: 92px;
   display: flex; flex-direction: column; gap: 6px; text-align: left; width: 100%;
   transition: transform 0.18s var(--spring);
 }
 .np-lyrics-card:active { transform: scale(0.98); }
-.np-lyrics-label { font-weight: 800; font-size: 14px; }
-.np-lyrics-preview { font-size: 13px; color: rgba(255,255,255,0.85); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: pre-line; }
+.np-lyrics-label {
+  font-weight: 800; font-size: 11.5px; letter-spacing: 0.6px; text-transform: uppercase;
+  color: rgba(255,255,255,0.62);
+}
+/* The playing line (and the next one) reads like lyrics, not like a caption. */
+.np-lyrics-preview {
+  font-size: 15px; font-weight: 650; line-height: 1.35; color: #fff;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  white-space: pre-line; word-break: break-word;
+}
 
 /* ---- Lyrics full screen ---- */
 .lyrics { position: fixed; inset: 0; z-index: 70; display: flex; flex-direction: column; background: var(--bg); }

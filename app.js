@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.4";
+  const APP_VERSION = "1.4.5";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -980,6 +980,7 @@
   }
 
   async function deleteTrack(id) {
+    if (player.state().track && player.state().track.id === id) player.stop();
     await db.deleteTrack(id);
     for (const p of playlists) {
       if (p.trackIds.includes(id)) {
@@ -1095,8 +1096,7 @@
     $("#np-shuffle").classList.toggle("active", st.shuffle);
     $("#np-repeat").innerHTML = st.repeat === "one" ? REPEAT_ONE_SVG : REPEAT_SVG;
     $("#np-repeat").classList.toggle("active", st.repeat !== "off");
-    const prev = $("#np-lyrics-preview");
-    if (prev) prev.textContent = t.lyrics ? t.lyrics.split("\n").slice(0, 2).join("\n") : "Tap to add lyrics";
+    updateNpLyricsPreview();
     tintMini();
     tintNp();
     updateProgress();
@@ -1134,9 +1134,37 @@
     $("#np-remain").textContent = "-" + fmtTime(Math.max(0, duration - time));
   }
 
+  // The lyrics card on Now Playing previews the song itself: the line that is
+  // playing (when the lyrics are timed) plus the one coming up, so you can read
+  // along without opening the full lyrics view.
+  function npLyricsPreviewText(t) {
+    if (!t) return "Tap to add lyrics";
+    const lines = t.lyricsSynced && t.lyricsSynced.lines;
+    if (lines && lines.length) {
+      const now = player.state().currentTime || 0;
+      let i = 0;
+      while (i + 1 < lines.length && Number(lines[i + 1].t) <= now) i++;
+      const cur = (lines[i] && lines[i].text) || "";
+      const next = (lines[i + 1] && lines[i + 1].text) || "";
+      return [cur, next].filter(Boolean).join("\n") || "Tap to open lyrics";
+    }
+    if (t.lyrics) {
+      return t.lyrics.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 2).join("\n");
+    }
+    return "Tap to add lyrics";
+  }
+
+  function updateNpLyricsPreview() {
+    const el = $("#np-lyrics-preview");
+    if (!el) return;
+    const text = npLyricsPreviewText(currentTrack());
+    if (el.textContent !== text) el.textContent = text;
+  }
+
   function openNp() {
     np.classList.remove("hidden");
     tintNp();
+    updateNpLyricsPreview();
   }
   function closeNp() {
     np.classList.add("hidden");
@@ -1403,6 +1431,9 @@
     // Touch first: iOS cancels pointer events once it starts scrolling.
     drag.addEventListener("touchstart", (e) => {
       if (e.touches.length !== 1) return;
+      // The scrubber owns its own drag: dragging the timeline must never move
+      // or scroll the sheet.
+      if (e.target.closest(".np-seek") || e.target.closest("button") || e.target.closest("input")) return;
       begin(e.touches[0].clientY);
     }, { passive: true });
     drag.addEventListener("touchmove", (e) => {
@@ -1426,32 +1457,64 @@
     drag.addEventListener("pointerup", (e) => { if (e.pointerType !== "touch") finish(); });
     drag.addEventListener("pointercancel", (e) => { if (e.pointerType !== "touch") finish(); });
 
+    // Scrub. On iOS a drag inside the sheet is claimed by the sheet's own
+    // scroll/dismiss gesture unless we take the touch here and keep it: hence
+    // the non-passive touch handlers, stopPropagation, and touch-action: none.
     const seek = $("#np-seek");
-    const ratioFromEvent = (e) => {
+    const ratioFromX = (x) => {
       const r = seek.getBoundingClientRect();
-      return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+      if (!r.width) return 0;
+      return Math.min(1, Math.max(0, (x - r.left) / r.width));
     };
-    seek.addEventListener("pointerdown", (e) => {
+    const paintSeek = (ratio) => {
+      seek._ratio = ratio;
+      const fill = $("#np-seek-fill i");
+      if (fill) fill.style.width = ratio * 100 + "%";
+    };
+    const seekStart = (x, ev) => {
+      if (ev && ev.cancelable) ev.preventDefault();
       npSeekScrubbing = true;
       seek.classList.add("scrub");
-      seek.setPointerCapture(e.pointerId);
-      const st = player.state();
-      $("#np-seek-fill i").style.width = ratioFromEvent(e) * 100 + "%";
-      seek._ratio = ratioFromEvent(e);
-      void st;
-    });
-    seek.addEventListener("pointermove", (e) => {
+      paintSeek(ratioFromX(x));
+    };
+    const seekMove = (x, ev) => {
       if (!npSeekScrubbing) return;
-      seek._ratio = ratioFromEvent(e);
-      $("#np-seek-fill i").style.width = seek._ratio * 100 + "%";
-    });
-    seek.addEventListener("pointerup", () => {
+      if (ev && ev.cancelable) ev.preventDefault();
+      paintSeek(ratioFromX(x));
+    };
+    const seekEnd = () => {
       if (!npSeekScrubbing) return;
       npSeekScrubbing = false;
       seek.classList.remove("scrub");
-      const st = player.state();
-      player.seek((seek._ratio || 0) * (st.duration || 0));
+      const dur = player.state().duration || 0;
+      if (dur) player.seek((seek._ratio || 0) * dur);
+    };
+
+    seek.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      e.stopPropagation();
+      seekStart(e.touches[0].clientX, e);
+    }, { passive: false });
+    seek.addEventListener("touchmove", (e) => {
+      if (e.touches.length !== 1) return;
+      e.stopPropagation();
+      seekMove(e.touches[0].clientX, e);
+    }, { passive: false });
+    seek.addEventListener("touchend", seekEnd);
+    seek.addEventListener("touchcancel", seekEnd);
+
+    // Mouse and pen (desktop, and the headless tests).
+    seek.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "touch") return;
+      try { seek.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      seekStart(e.clientX, e);
     });
+    seek.addEventListener("pointermove", (e) => {
+      if (e.pointerType === "touch") return;
+      seekMove(e.clientX, e);
+    });
+    seek.addEventListener("pointerup", (e) => { if (e.pointerType !== "touch") seekEnd(); });
+    seek.addEventListener("pointercancel", (e) => { if (e.pointerType !== "touch") seekEnd(); });
   }
 
   // ---------- Lyrics ----------
@@ -1724,6 +1787,7 @@
       $("#set-clear").onclick = async () => {
         const ok = await confirmSheet("Clear library", "Every song, playlist, lyric, and setting will be deleted from this device. This cannot be undone.", "Clear everything", true);
         if (!ok) return;
+        player.stop();
         await db.clearAll();
         artUrlCache.forEach((u) => URL.revokeObjectURL(u));
         artUrlCache.clear(); colorCache.clear();
@@ -1856,7 +1920,7 @@
     setTimeout(() => mini.classList.remove("pop"), 260);
   });
   player.on("state", updatePlayerUI);
-  player.on("time", () => { updateProgress(); highlightLrc(); });
+  player.on("time", () => { updateProgress(); updateNpLyricsPreview(); highlightLrc(); });
   player.on("playcount", () => { refreshData(); });
   player.on("queue", updatePlayerUI);
   player.on("needqueue", () => toast("Pick a song first"));
