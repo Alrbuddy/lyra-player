@@ -396,16 +396,50 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(info.wide, false, "no element spills past the right edge");
   });
 
-  await check("the body is not pinned, and the shell fills the visible height", async () => {
-    const info = await page.evaluate(() => ({
-      bodyPos: getComputedStyle(document.body).position,
-      lift: getComputedStyle(document.documentElement).getPropertyValue("--vv-lift").trim(),
-      viewH: document.querySelector("#view").getBoundingClientRect().height,
-      innerH: window.innerHeight,
-    }));
+  await check("the bars live in a measured shell, not pinned to the browser viewport", async () => {
+    const info = await page.evaluate(() => {
+      const shell = document.getElementById("shell");
+      const nav = document.querySelector(".nav");
+      const mini = document.querySelector(".mini");
+      const sb = shell.getBoundingClientRect();
+      const nb = nav.getBoundingClientRect();
+      const mb = mini.getBoundingClientRect();
+      const hitMini = document.elementFromPoint(Math.round(mb.left + mb.width / 2), Math.round(mb.top + mb.height / 2));
+      const hitNav = document.elementFromPoint(Math.round(nb.left + 40), Math.round(nb.top + nb.height / 2));
+      return {
+        bodyPos: getComputedStyle(document.body).position,
+        shellPos: getComputedStyle(shell).position,
+        navPos: getComputedStyle(nav).position,
+        miniPos: getComputedStyle(mini).position,
+        shellH: sb.height,
+        viewH: document.querySelector("#view").getBoundingClientRect().height,
+        innerH: window.innerHeight,
+        miniHit: !!(hitMini && hitMini.closest("#mini")),
+        navHit: !!(hitNav && hitNav.closest(".nav")),
+        navInShell: shell.contains(nav),
+        miniInShell: shell.contains(mini),
+      };
+    });
     assert.notEqual(info.bodyPos, "fixed", "a fixed body is what offset taps on iOS");
-    assert.ok(info.lift === "0px" || info.lift === "", "no lift needed here, got " + info.lift);
-    assert.ok(Math.abs(info.viewH - info.innerH) <= 1, "shell is " + info.viewH + " of " + info.innerH);
+    assert.equal(info.shellPos, "absolute");
+    assert.equal(info.navPos, "absolute", "tab bar is positioned inside the shell");
+    assert.equal(info.miniPos, "absolute", "mini player is positioned inside the shell");
+    assert.equal(info.navInShell, true);
+    assert.equal(info.miniInShell, true);
+    assert.ok(Math.abs(info.shellH - info.innerH) <= 1, "shell is " + info.shellH + " of " + info.innerH);
+    assert.ok(Math.abs(info.viewH - info.innerH) <= 1, "view fills the shell");
+    assert.equal(info.miniHit, true, "the point over the mini player hits the mini player");
+    assert.equal(info.navHit, true, "the point over the tab bar hits the tab bar");
+  });
+
+  await check("Settings reports the viewport numbers", async () => {
+    await page.evaluate(() => Lyra.app.go("settings"));
+    await page.waitForTimeout(500);
+    const text = await page.evaluate(() => document.getElementById("set-display").textContent);
+    assert.match(text, /app \d+/);
+    assert.match(text, /win \d+/);
+    assert.match(text, /screen \d+/);
+    assert.match(text, /dpr [\d.]+/);
   });
 
   await check("a viewport mismatch lifts both bars by exactly that much", async () => {

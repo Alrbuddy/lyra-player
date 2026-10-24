@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.2";
+  const APP_VERSION = "1.4.3";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -544,6 +544,7 @@
         <div><div class="l">Check for updates</div><div class="s" id="set-update-sub">Downloads the newest build. Songs, playlists and lyrics stay on this device.</div></div>
       </button>
       <div class="set-row"><div><div class="l">Version</div><div class="s" id="set-version">Lyra ${APP_VERSION}</div></div></div>
+      <div class="set-row"><div><div class="l">Display</div><div class="s" id="set-display">—</div></div></div>
     </div>`;
   }
 
@@ -578,6 +579,23 @@
       const m = (await res.text()).match(/const VERSION\s*=\s*"([^"]+)"/);
       return m ? m[1] : "";
     } catch (e) { return ""; }
+  }
+
+  // Numbers to read off a screenshot when iOS lays the page out oddly.
+  function fillDisplayInfo() {
+    const el = $("#set-display");
+    if (!el) return;
+    const vv = window.visualViewport;
+    const appH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-h")) || 0;
+    const parts = [
+      "app " + Math.round(appH),
+      "win " + window.innerHeight,
+      vv ? "vv " + Math.round(vv.height) : "vv none",
+      vv ? "top " + Math.round(vv.offsetTop) : "",
+      "screen " + window.screen.height,
+      "dpr " + window.devicePixelRatio,
+    ];
+    el.textContent = parts.filter(Boolean).join(" · ");
   }
 
   async function fillVersionInfo() {
@@ -1679,6 +1697,7 @@
     if (view === "settings") {
       fillStorageInfo();
       fillVersionInfo();
+      fillDisplayInfo();
       $("#set-update").onclick = checkForUpdates;
       window.Lyra.lyricsSync?.mountSettings(v);
       db.getSetting("lyricsAutoScroll").then((v2) => { $("#set-autoscroll").checked = !!v2; });
@@ -1835,10 +1854,9 @@
   function syncViewport() {
     const root = document.documentElement;
     const vv = window.visualViewport;
-    if (!vv) { root.style.setProperty("--vv-lift", "0px"); return; }
-    const hidden = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
-    root.style.setProperty("--vv-lift", Math.round(hidden) + "px");
-    root.style.setProperty("--app-h", Math.round(vv.height) + "px");
+    const h = Math.round((vv && vv.height) || window.innerHeight || 0);
+    if (h > 0) root.style.setProperty("--app-h", h + "px");
+    root.style.setProperty("--vv-lift", "0px");
   }
 
   function watchViewport() {
@@ -1851,7 +1869,14 @@
     // Deliberately not listening to visualViewport resize/scroll: the keyboard
     // also moves that viewport, and the bars should stay put while typing.
     // A cold start on iOS can report the wrong height for a moment.
-    [50, 300, 900, 1500].forEach((ms) => setTimeout(syncViewport, ms));
+    [0, 50, 300, 900, 1500, 2500].forEach((ms) => setTimeout(syncViewport, ms));
+    window.addEventListener("pageshow", syncViewport);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) syncViewport(); });
+    // First touch also makes iOS settle its viewport; re-measure then.
+    document.addEventListener("touchend", function once() {
+      document.removeEventListener("touchend", once);
+      syncViewport();
+    });
   }
 
   async function boot() {

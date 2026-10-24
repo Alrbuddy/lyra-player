@@ -29,8 +29,9 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   overscroll-behavior: none;
   /* App shell: vertical scrolling only, no pinch or double-tap zoom,
-     and nothing can be dragged sideways out of the frame. */
-  overflow-x: hidden;
+     and nothing can be dragged sideways out of the frame. The document
+     itself never scrolls — #view does. */
+  overflow: hidden;
   touch-action: pan-y;
 }
 /* Never pin the body: on iOS it makes fixed children resolve against a box
@@ -52,10 +53,20 @@ input, textarea { user-select: text; -webkit-user-select: text; font: inherit; }
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
 
+/* ---- App shell ----
+   One box, explicitly the height of the visible viewport, holding the bars.
+   position:fixed children of the browser viewport are what iOS misplaces on a
+   cold start (paint in one place, hit testing in another), so the bars are
+   absolute children of this measured shell instead. */
+#shell {
+  position: absolute; top: 0; left: 0; width: 100%;
+  height: var(--app-h, 100%);
+  overflow: hidden;
+}
+
 /* ---- Main view ---- */
 #view {
-  position: fixed; inset: 0;
-  height: var(--app-h, 100%);
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
   overflow-y: auto; overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   /* Content scrolls under both floating bars; blur stays visible. */
@@ -295,7 +306,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ---- Bottom nav — iOS Liquid Glass floating capsule ---- */
 .nav {
-  position: fixed; left: var(--nav-inset); right: var(--nav-inset);
+  position: absolute; left: var(--nav-inset); right: var(--nav-inset);
   bottom: calc(var(--bar-bottom) + var(--vv-lift, 0px));
   height: var(--nav-h); padding: 5px; gap: 0;
   display: flex; border-radius: 32px; z-index: 50;
@@ -338,7 +349,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ---- Mini player ---- */
 .mini {
-  position: fixed; left: var(--nav-inset); right: var(--nav-inset);
+  position: absolute; left: var(--nav-inset); right: var(--nav-inset);
   bottom: calc(var(--bar-bottom) + var(--nav-h) + var(--nav-gap) + var(--vv-lift, 0px));
   height: var(--mini-h); border-radius: 28px;
   display: flex; align-items: center; gap: 10px; padding: 0 6px 0 10px;
