@@ -1,0 +1,14 @@
+{
+  "name": "lyra",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lyra offline music PWA",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:page",
+    "test:unit": "node --test tests/unit/*.test.js",
+    "test:page": "node tests/page/lyrics-lab.test.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
+  }
+}

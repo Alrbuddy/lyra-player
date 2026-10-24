@@ -530,7 +530,84 @@ input[type="range"]::-webkit-slider-thumb {
 /* ---- Context header (back) ---- */
 .back-btn { margin-left: -10px; }
 
+/* ================= Lyrics Lab (beta) ================= */
+.llab-card { margin-bottom: 4px; }
+.llab-field { padding: 12px 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.llab-field .l { display: block; font-weight: 600; font-size: 15px; margin-bottom: 8px; }
+.llab-input {
+  width: 100%; background: var(--surface3); color: var(--text);
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;
+  padding: 12px; font-size: 15px; outline: none; min-height: 44px;
+}
+.llab-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.llab-row .btn { padding: 9px 14px; font-size: 13.5px; min-height: 38px; }
+.llab-hint { font-size: 12.5px; color: var(--text-dim); }
+.llab-hint.ok { color: var(--accent-active); }
+.llab-hint.bad { color: #ff8a8a; }
+.llab-note { margin: 12px 4px 14px; font-size: 12.5px; color: var(--text-dim); line-height: 1.45; }
+.llab-select {
+  background: var(--surface3); color: var(--text); border: 0; border-radius: 10px;
+  padding: 10px 12px; font-size: 15px; min-height: 40px; min-width: 128px;
+}
+
+/* Now Playing actions */
+.llab-np { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+.llab-np .btn { padding: 9px 13px; font-size: 13px; min-height: 38px; }
+.llab-np .btn[disabled] { opacity: 0.45; }
+.llab-status { flex-basis: 100%; min-height: 16px; font-size: 12.5px; color: var(--text-dim); }
+.llab-status.ok { color: var(--accent-active); }
+.llab-status.bad { color: #ff8a8a; }
+
+/* Lyrics view toolbar */
+#lyrics.llab-active .lyrics-autoscroll { display: none; }
+.llab-bar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 2px 14px 8px;
+}
+.llab-seg { display: flex; background: rgba(255,255,255,0.08); border-radius: 999px; padding: 2px; }
+.llab-seg button {
+  border-radius: 999px; padding: 7px 12px; font-size: 12.5px; font-weight: 700;
+  color: var(--text-dim); min-height: 32px; min-width: 0;
+}
+.llab-seg button.on { background: rgba(255,255,255,0.16); color: #fff; }
+.llab-chip {
+  border-radius: 999px; background: rgba(255,255,255,0.08); color: #fff;
+  font-size: 12.5px; font-weight: 700; padding: 7px 11px; min-height: 32px; min-width: 0;
+}
+.llab-chip.on { background: rgba(30,215,96,0.18); color: var(--accent-active); }
+.llab-offset { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; min-width: 38px; text-align: center; }
+.llab-follow {
+  position: absolute; right: 16px; z-index: 72;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+  border-radius: 999px; padding: 11px 18px; font-size: 13px; font-weight: 800;
+  background: var(--accent); color: #000; min-height: 0;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+
+/* Highlighting */
+.llab-text { padding-bottom: 30vh; }
+.llab-line {
+  padding: 5px 0; color: rgba(255,255,255,0.42);
+  transition: color 0.2s var(--ease), opacity 0.2s;
+  overflow-wrap: break-word;
+}
+.llab-line.past { color: rgba(255,255,255,0.3); }
+.llab-line.now { color: #fff; }
+.llab-line.tap { cursor: pointer; }
+.llab-word { color: inherit; }
+.llab-word.on { color: #fff; }
+.llab-word.cur {
+  background-image: linear-gradient(90deg, #fff var(--fill, 0%), rgba(255,255,255,0.45) var(--fill, 0%));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
+.llab-word.low {
+  text-decoration: underline; text-decoration-color: rgba(255,140,140,0.85);
+  text-decoration-thickness: 2px; text-underline-offset: 4px;
+}
+
 /* ---- Motion preferences ---- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001s !important; transition-duration: 0.001s !important; }
+  .llab-line { transition: none; }
 }

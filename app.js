@@ -845,6 +845,7 @@
     updateProgress();
     renderSleepBadge();
     renderNpTrimZone();
+    window.Lyra.lyricsSync?.mountNp();
     if (route.view === "library" && libFilter === "songs") render();
   }
 
@@ -1183,6 +1184,7 @@
     if (!t.lyrics) {
       box.className = "lyrics-text empty";
       box.innerHTML = "No lyrics yet.<br>Tap the pencil to paste them in.";
+      window.Lyra.lyricsSync?.onLyricsRendered(t);
       return;
     }
     box.className = "lyrics-text";
@@ -1194,9 +1196,11 @@
       box.textContent = t.lyrics;
       box._lrc = null;
     }
+    window.Lyra.lyricsSync?.onLyricsRendered(t);
   }
 
   function highlightLrc() {
+    if (window.Lyra.lyricsSync?.handlesHighlight()) return;
     const box = $("#lyrics-text");
     if (!box || !box._lrc) return;
     const now = player.state().currentTime;
@@ -1222,6 +1226,7 @@
   function closeLyrics() {
     $("#lyrics").classList.add("hidden");
     stopAutoScroll();
+    window.Lyra.lyricsSync?.onLyricsClosed();
     lyricsTrackId = null;
   }
 
@@ -1238,6 +1243,7 @@
   function startAutoScroll() {
     stopAutoScroll();
     autoScrollTimer = setInterval(() => {
+      if (window.Lyra.lyricsSync?.handlesAutoScroll()) return;
       if (!autoScrollOn) return;
       if (Date.now() < autoScrollPauseUntil) return;
       const sc = $("#lyrics-scroll");
@@ -1409,6 +1415,7 @@
 
     if (view === "settings") {
       fillStorageInfo();
+      window.Lyra.lyricsSync?.mountSettings(v);
       db.getSetting("lyricsAutoScroll").then((v2) => { $("#set-autoscroll").checked = !!v2; });
       $("#set-autoscroll").onchange = (e) => db.setSetting("lyricsAutoScroll", e.target.checked);
       $("#set-export").onclick = exportBackup;
@@ -1538,6 +1545,7 @@
   // ---------- Boot ----------
   async function boot() {
     await refreshData();
+    window.Lyra.lyricsSync?.init();
     wireChrome();
     render();
     // Restore a sleep timer that was still running when the app was closed.

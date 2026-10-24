@@ -1,5 +1,5 @@
 /* Lyra service worker — cache-first, fully offline. Bump VERSION after any cached-file change. */
-const VERSION = "v4";
+const VERSION = "v5";
 const CACHE = "lyra-" + VERSION;
 
 const ASSETS = [
@@ -9,6 +9,7 @@ const ASSETS = [
   "db.js",
   "id3.js",
   "player.js",
+  "lyrics-sync.js",
   "app.js",
   "manifest.webmanifest",
   "vendor/jsmediatags.min.js",
