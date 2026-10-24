@@ -23,12 +23,16 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body {
-  margin: 0; padding: 0; height: 100%;
+  margin: 0; padding: 0; height: 100%; width: 100%;
   background: var(--bg); color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   overscroll-behavior: none;
+  /* App shell: vertical scrolling only, no pinch or double-tap zoom,
+     and nothing can be dragged sideways out of the frame. */
+  overflow-x: hidden;
+  touch-action: pan-y;
 }
-body { user-select: none; -webkit-user-select: none; }
+body { user-select: none; -webkit-user-select: none; position: fixed; inset: 0; }
 button {
   font: inherit; color: inherit; background: none; border: 0; cursor: pointer;
   min-width: 44px; min-height: 44px;
@@ -53,8 +57,10 @@ input, textarea { user-select: text; -webkit-user-select: text; font: inherit; }
   padding: calc(env(safe-area-inset-top, 0px) + 12px) 16px
     calc(var(--bar-bottom) + var(--nav-h) + var(--nav-gap) + var(--mini-h) + 24px);
 }
-.screen { animation: fade-in 0.28s var(--ease); }
-@keyframes fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+/* Opacity only: a transform here forces a new layer for the whole screen and
+   made tab switches feel sticky on iOS. */
+.screen { animation: fade-in 0.16s var(--ease); }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 .press { transition: transform 0.18s var(--spring); }
 .press:active { transform: scale(0.96); }
@@ -142,7 +148,14 @@ input, textarea { user-select: text; -webkit-user-select: text; font: inherit; }
 .art { object-fit: cover; display: block; background: var(--surface2); }
 .art-ph {
   display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(150deg, #202020, #141414 70%);
+  background-color: #1b1b1b;
+  /* A flat dark gradient bands into visible diagonal streaks once it is
+     stretched to a 340px cover, so the tint is radial + dithered with a
+     whisper of noise. */
+  background-image:
+    radial-gradient(125% 125% at 32% 18%, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0) 62%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  background-size: auto, 96px 96px;
 }
 .art-ph svg { width: 42%; height: 42%; fill: var(--accent); opacity: 0.9; }
 .art-heart {
@@ -340,10 +353,10 @@ input[type="range"]::-webkit-slider-thumb {
 .mini-artist { color: var(--text-dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mini .icon-btn { width: 40px; height: 40px; }
 .mini-progress {
-  position: absolute; left: 10px; right: 10px; bottom: 3px; height: 2px;
-  background: rgba(255,255,255,0.12); border-radius: 1px; overflow: hidden;
+  position: absolute; left: 14px; right: 14px; bottom: 4px; height: 3px;
+  background: rgba(255,255,255,0.14); border-radius: 999px; overflow: hidden;
 }
-.mini-progress i { display: block; height: 100%; width: 0; background: #fff; border-radius: 1px; }
+.mini-progress i { display: block; height: 100%; width: 0; background: #fff; border-radius: 999px; }
 
 /* ---- Now Playing ---- */
 .np {
@@ -351,12 +364,11 @@ input[type="range"]::-webkit-slider-thumb {
   display: flex; flex-direction: column;
   transform: translateY(0);
   transition: transform 0.38s var(--ease);
-  will-change: transform;
 }
 .np.hidden { display: flex !important; transform: translateY(105%); pointer-events: none; }
 .np.no-anim { transition: none; }
 .np-drag {
-  flex: 1; display: flex; flex-direction: column;
+  flex: 1; display: flex; flex-direction: column; touch-action: pan-y; overscroll-behavior-y: contain;
   padding: calc(env(safe-area-inset-top, 0px) + 6px) 24px
     calc(env(safe-area-inset-bottom, 0px) + 18px);
   overflow-y: auto;
@@ -372,7 +384,7 @@ input[type="range"]::-webkit-slider-thumb {
   background: rgba(30, 215, 96, 0.14); border: 1px solid rgba(30, 215, 96, 0.35);
   padding: 2px 9px; border-radius: 999px; font-variant-numeric: tabular-nums;
 }
-.np-seek-zone { position: absolute; top: 0; bottom: 0; background: rgba(30, 215, 96, 0.45); border-radius: 2px; }
+.np-head-actions .icon-btn.active { color: #1ED760; }
 .np-cover-wrap { display: flex; justify-content: center; margin: 18px 0 22px; }
 .np-cover { width: min(78vw, 340px); aspect-ratio: 1; border-radius: 12px; overflow: hidden; box-shadow: 0 24px 70px rgba(0,0,0,0.6), 0 0 80px rgba(255,255,255,0.06); }
 .np-cover .art, .np-cover .art-ph { width: 100%; height: 100%; border-radius: 0; }
@@ -380,9 +392,9 @@ input[type="range"]::-webkit-slider-thumb {
 .np-text { flex: 1; min-width: 0; }
 .np-title { font-size: 21px; font-weight: 800; letter-spacing: -0.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .np-artist { color: rgba(255,255,255,0.72); font-size: 15px; margin-top: 2px; }
-.np-seek { height: 26px; display: flex; align-items: center; margin-top: 12px; cursor: pointer; touch-action: none; }
-.np-seek .np-seek-fill { position: relative; height: 4px; width: 100%; background: rgba(255,255,255,0.25); border-radius: 2px; }
-.np-seek-fill i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: #fff; border-radius: 2px; display: block; }
+.np-seek { position: relative; height: 26px; display: flex; align-items: center; margin-top: 12px; cursor: pointer; touch-action: none; }
+.np-seek .np-seek-fill { position: relative; z-index: 1; height: 5px; width: 100%; background: rgba(255,255,255,0.22); border-radius: 999px; overflow: visible; }
+.np-seek-fill i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: #fff; border-radius: 999px; display: block; }
 .np-seek-dot {
   position: absolute; right: -7px; top: 50%; width: 14px; height: 14px; border-radius: 50%;
   background: #fff; transform: translateY(-50%) scale(0.85); transition: transform 0.15s;

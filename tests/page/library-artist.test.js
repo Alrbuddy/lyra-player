@@ -298,10 +298,10 @@ async function subtitle(page, id) {
       offline: Lyra.app._test.versionLabel("v7", ""),
       newest: Lyra.app._test.newestVersion(["v9", "v10", "v2"]),
     }));
-    assert.equal(labels.same, "Lyra 1.3.0 · build v7");
-    assert.equal(labels.stale, "Lyra 1.3.0 · build v2 · v7 available", "a stale phone must show both builds");
-    assert.equal(labels.none, "Lyra 1.3.0");
-    assert.equal(labels.offline, "Lyra 1.3.0 · build v7");
+    assert.equal(labels.same, "Lyra 1.4.0 · build v7");
+    assert.equal(labels.stale, "Lyra 1.4.0 · build v2 · v7 available", "a stale phone must show both builds");
+    assert.equal(labels.none, "Lyra 1.4.0");
+    assert.equal(labels.offline, "Lyra 1.4.0 · build v7");
     assert.equal(labels.newest, "v10", "numeric, not string, ordering");
   });
 
@@ -314,7 +314,7 @@ async function subtitle(page, id) {
       hasUpdateRow: !!document.getElementById("set-update"),
     }));
     assert.ok(info.hasUpdateRow);
-    assert.match(info.version, /^Lyra 1\.3\.0/, "version text: " + info.version);
+    assert.match(info.version, /^Lyra 1\.4\.0/, "version text: " + info.version);
     assert.match(info.version, /build v\d+/, "includes the installed build: " + info.version);
     assert.match(info.sub, /latest build|newer build|offline/i, "status text: " + info.sub);
   });

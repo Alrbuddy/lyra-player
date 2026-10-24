@@ -491,6 +491,9 @@
     if (status === 401 || status === 403) return new LlabError("key", "That key was rejected (" + status + ")." + (apiMsg ? " " + apiMsg : ""));
     if (status === 429) return new LlabError("rate", "Groq is rate limiting this key (429).");
     if (status === 413) return new LlabError("too-long", "Groq says the file is too large (413).");
+    if (status === 400 && /multipart|NextPart|EOF/i.test(apiMsg || "")) {
+      return new LlabError("upload", "The audio didn't upload in one piece. Try again on Wi-Fi." + (apiMsg ? " (Groq: " + apiMsg + ")" : ""));
+    }
     return new LlabError("status", "Groq answered " + status + "." + (apiMsg ? " " + apiMsg : ""));
   }
 
@@ -545,6 +548,33 @@
    * transcribeBlob(blob, {key, language, onStage}) -> { text, words, segments, language }
    * Stages: "uploading" | "transcribing".
    */
+  const EXT_BY_TYPE = {
+    "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a", "audio/x-m4a": "m4a",
+    "audio/m4a": "m4a", "audio/aac": "aac", "audio/wav": "wav", "audio/x-wav": "wav",
+    "audio/wave": "wav", "audio/ogg": "ogg", "audio/opus": "opus", "audio/webm": "webm",
+    "audio/flac": "flac", "audio/x-flac": "flac", "audio/aiff": "aiff", "audio/x-aiff": "aiff",
+  };
+
+  /**
+   * A File whose bytes are already in memory.
+   * Tracks store the picked File, and Safari can hand a multipart upload a
+   * partly-unreadable stream from it — Groq then answers 400 "multipart:
+   * NextPart: EOF" because the body ended early. Copying the bytes gives the
+   * browser an exact Content-Length and turns an unreadable file into a clear
+   * message instead of an API error.
+   */
+  async function uploadFileFrom(blob) {
+    const bytes = await blob.arrayBuffer();
+    if (!bytes.byteLength) {
+      throw new LlabError("empty-audio", "This song's audio is empty on this device. Re-import it from the Files app.");
+    }
+    const type = blob.type && /^audio\//.test(blob.type) ? blob.type : "audio/mpeg";
+    const ext = EXT_BY_TYPE[type] || "mp3";
+    let name = String(blob.name || "lyra-upload").replace(/[\\/:*?"<>|]+/g, " ").trim() || "lyra-upload";
+    if (!/\.[a-z0-9]{2,5}$/i.test(name)) name += "." + ext;
+    return new File([bytes], name, { type });
+  }
+
   async function transcribeBlob(blob, opts) {
     opts = opts || {};
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
@@ -552,8 +582,9 @@
     }
     if (!opts.key) throw new LlabError("nokey", "Add your Groq API key in Settings first.");
 
+    const file = await uploadFileFrom(blob);
     const form = new FormData();
-    form.append("file", blob, blob.name || "lyra-upload." + (blob.type === "audio/wav" ? "wav" : "mp3"));
+    form.append("file", file, file.name);
     form.append("model", "whisper-large-v3");
     form.append("response_format", "verbose_json");
     form.append("temperature", "0");
@@ -573,7 +604,31 @@
       });
     };
 
+    // Same body, sent by fetch instead of XHR. Used when the XHR body is
+    // reported truncated, so the phone still gets its transcript.
+    const sendFetch = async () => {
+      if (opts.onStage) opts.onStage("uploading");
+      let r;
+      try {
+        r = await fetch(opts.endpoint || TRANSCRIBE_URL, {
+          method: "POST",
+          headers: { Authorization: "Bearer " + opts.key },
+          body: form,
+        });
+      } catch (e) {
+        throw new LlabError("cors", "The request was blocked (CORS or network).");
+      }
+      const text = await r.text();
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch (e) { json = null; }
+      if (opts.onStage) opts.onStage("transcribing");
+      return { status: r.status, json, text };
+    };
+
     let res = await send();
+    if (res.status === 400 && /multipart|nextpart|eof/i.test((res.json && res.json.error && res.json.error.message) || "")) {
+      res = await sendFetch();
+    }
     if (res.status === 429) {
       // one retry, per spec
       await new Promise((r) => setTimeout(r, 1500));
@@ -1319,7 +1374,7 @@
     alignTokens,
     encodeWav16,
     prepareAudioForUpload,
-    transcribeBlob,
+    transcribeBlob, uploadFileFrom,
     normalizeTranscript,
     testKey,
     importLrcFile,

@@ -1,0 +1,406 @@
+/* Headless page tests for the app shell: swipe-to-dismiss, trim band,
+ * tab switching, zoom/pan locks and the upload body prepared for Groq.
+ * iPhone viewport 390x844, served from a /Lyra/ subfolder.
+ * Run: node tests/page/playback-shell.test.js
+ */
+"use strict";
+
+const assert = require("node:assert/strict");
+const http = require("node:http");
+const { chromium } = require("playwright");
+const { createServer, PREFIX } = require("../server");
+
+const VIEWPORT = { width: 390, height: 844 };
+const results = [];
+
+async function check(name, fn) {
+  try {
+    await fn();
+    results.push([name, "PASS", ""]);
+    console.log("  PASS  " + name);
+  } catch (err) {
+    const msg = (err && err.message ? err.message : String(err)).split("\n")[0];
+    results.push([name, "FAIL", msg]);
+    console.log("  FAIL  " + name + "\n        " + msg);
+  }
+}
+
+async function seed(page, extra) {
+  return page.evaluate(async (extra) => {
+    await Lyra.db.clearAll();
+    const sr = 8000, frames = sr * 100;
+    const buf = new ArrayBuffer(44 + frames * 2);
+    const dv = new DataView(buf);
+    const ws = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    ws(0, "RIFF"); dv.setUint32(4, 36 + frames * 2, true); ws(8, "WAVE"); ws(12, "fmt ");
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true);
+    dv.setUint16(34, 16, true); ws(36, "data"); dv.setUint32(40, frames * 2, true);
+    const blob = new Blob([buf], { type: "audio/wav" });
+    const id = await Lyra.db.addTrack(Object.assign({
+      title: "Shell Fixture Song With A Very Long Title To Check Nothing Overflows The Screen",
+      artist: "Fixture Artist",
+      album: "",
+      duration: 100,
+      audio: blob,
+      addedAt: Date.now(),
+      plays: 0,
+      liked: false,
+      lyrics: "",
+    }, extra || {}));
+    await Lyra.app.refreshData();
+    Lyra.app.go("library");
+    return id;
+  }, extra);
+}
+
+async function closeNp(page) {
+  await page.evaluate(() => document.getElementById("np").classList.add("hidden"));
+  await page.waitForTimeout(120);
+}
+
+async function openNp(page) {
+  await closeNp(page);
+  await page.evaluate(async () => {
+    const id = Lyra.app.tracks[0].id;
+    await Lyra.player.playQueue([id], 0);
+  });
+  await page.waitForTimeout(400);
+  await page.click("#mini");
+  await page.waitForTimeout(350);
+}
+
+async function npHidden(page) {
+  return page.evaluate(() => document.getElementById("np").classList.contains("hidden"));
+}
+
+async function dragMouse(page, fromY, toY) {
+  await page.mouse.move(195, fromY);
+  await page.mouse.down();
+  await page.mouse.move(195, toY, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(420);
+}
+
+async function dragTouch(page, fromY, toY) {
+  await page.evaluate(async ({ fromY, toY }) => {
+    const el = document.getElementById("np-drag");
+    const mk = (y) => new Touch({ identifier: 7, target: el, clientX: 195, clientY: y });
+    const fire = (type, y, list) => el.dispatchEvent(new TouchEvent(type, {
+      bubbles: true, cancelable: true,
+      touches: (list || []).map(mk), targetTouches: (list || []).map(mk),
+      changedTouches: [mk(y)],
+    }));
+    fire("touchstart", fromY, [fromY]);
+    for (let i = 1; i <= 6; i++) {
+      fire("touchmove", fromY + ((toY - fromY) * i) / 6, [fromY + ((toY - fromY) * i) / 6]);
+      await new Promise((r) => setTimeout(r, 12));
+    }
+    fire("touchend", toY, []);
+  }, { fromY, toY });
+  await page.waitForTimeout(420);
+}
+
+(async () => {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}${PREFIX}/`;
+
+  const browser = await chromium.launch();
+  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(String(e)));
+  await page.goto(base, { waitUntil: "load" });
+  await page.waitForFunction(() => window.Lyra && Lyra.app && Lyra.app.tracks);
+  await page.evaluate(() => navigator.serviceWorker?.getRegistrations().then((r) => r.forEach((x) => x.unregister())));
+
+  console.log("\nNow Playing dismissal");
+  await check("dragging down from the top of Now Playing closes it", async () => {
+    await seed(page, null);
+    await openNp(page);
+    assert.equal(await npHidden(page), false, "sheet starts open");
+    await dragMouse(page, 300, 520);
+    assert.equal(await npHidden(page), true, "closed after a downward drag");
+  });
+
+  await check("a small drag springs back instead of closing", async () => {
+    await openNp(page);
+    await dragMouse(page, 300, 340);
+    assert.equal(await npHidden(page), false, "still open after 40px");
+    const transform = await page.evaluate(() => document.getElementById("np").style.transform);
+    assert.equal(transform, "", "transform reset after release");
+  });
+
+  await check("dragging up scrolls the sheet instead of dismissing it", async () => {
+    await dragMouse(page, 500, 250);
+    assert.equal(await npHidden(page), false);
+  });
+
+  await check("a touch swipe down closes it too", async () => {
+    await page.evaluate(() => document.getElementById("np").classList.remove("hidden"));
+    await page.waitForTimeout(200);
+    await dragTouch(page, 260, 520);
+    assert.equal(await npHidden(page), true, "touch swipe closed the sheet");
+  });
+
+  console.log("\nTrim indicator");
+  await check("a trimmed song marks the scissors button instead of striping the progress bar", async () => {
+    await seed(page, { startAt: 20, endAt: 80 });
+    await openNp(page);
+    const info = await page.evaluate(() => {
+      const fill = document.getElementById("np-seek-fill");
+      const cs = getComputedStyle(fill);
+      const seek = document.querySelector("#np-seek");
+      const bar = seek.getBoundingClientRect();
+      return {
+        active: document.getElementById("np-trim").classList.contains("active"),
+        aria: document.getElementById("np-trim").getAttribute("aria-label"),
+        zoneExists: !!document.getElementById("np-seek-zone"),
+        seekChildren: seek.children.length,
+        fillHeight: cs.height,
+        fillRadius: cs.borderRadius,
+        bar: { top: bar.top, bottom: bar.bottom },
+        extraLine: document.elementsFromPoint(150, Math.round(bar.bottom - 1))
+          .filter((el) => el.closest("#np-seek") && !el.closest("#np-seek-fill")).length,
+      };
+    });
+    assert.equal(info.active, true, "scissors button is highlighted");
+    assert.match(info.aria, /trimmed/i);
+    assert.equal(info.zoneExists, false, "no extra stripe element on the bar");
+    assert.equal(info.seekChildren, 1, "the seek row holds only the bar");
+    assert.equal(info.fillHeight, "5px");
+    assert.equal(info.fillRadius, "999px");
+    assert.ok(info.bar.bottom - info.bar.top === 26, "seek row still a 26px touch target");
+  });
+
+  await check("an untrimmed song leaves the scissors button plain", async () => {
+    await seed(page, null);
+    await openNp(page);
+    const info = await page.evaluate(() => ({
+      active: document.getElementById("np-trim").classList.contains("active"),
+      mini: getComputedStyle(document.querySelector(".mini-progress")).height,
+    }));
+    assert.equal(info.active, false);
+    assert.equal(info.mini, "3px", "mini player progress is a clean 3px bar");
+  });
+
+  console.log("\nTab switching");
+  await check("tabs switch without View Transitions", async () => {
+    await closeNp(page);
+    await page.evaluate(() => {
+      window.__vt = 0;
+      const orig = document.startViewTransition;
+      document.startViewTransition = function (...a) { window.__vt++; return orig.apply(document, a); };
+    });
+    for (const t of ["search", "library", "import", "home"]) {
+      await page.click(`.nav-btn[data-tab="${t}"]`);
+      await page.waitForTimeout(140);
+      const view = await page.evaluate(() => document.querySelector("#view").innerHTML.length);
+      assert.ok(view > 100, t + " rendered");
+    }
+    assert.equal(await page.evaluate(() => window.__vt), 0, "no view-transition snapshots");
+  });
+
+  await check("play/pause no longer rebuilds the library list", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const id = Lyra.app.tracks[0].id;
+      await Lyra.player.playQueue([id], 0);
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(350);
+    const kept = await page.evaluate(async () => {
+      window.__row = document.querySelector("#lib-body .song-row");
+      await Lyra.player.toggle();
+      await new Promise((r) => setTimeout(r, 260));
+      return document.querySelector("#lib-body .song-row") === window.__row;
+    });
+    assert.equal(kept, true, "same DOM node before and after pause");
+  });
+
+  await check("tapping the tab you are on jumps back to the top", async () => {
+    await page.evaluate(() => { document.querySelector("#view").scrollTop = 420; });
+    await page.waitForTimeout(80);
+    await page.click('.nav-btn[data-tab="home"]');
+    await page.waitForTimeout(600);
+    const top = await page.evaluate(() => document.querySelector("#view").scrollTop);
+    assert.ok(top < 5, "scrolled back to the top, got " + top);
+  });
+
+  console.log("\nShell locks");
+  await check("the page cannot scroll sideways", async () => {
+    const info = await page.evaluate(() => {
+      window.scrollTo(80, 0);
+      const doc = document.documentElement;
+      const wide = [...document.querySelectorAll("#view *")]
+        .some((el) => el.getBoundingClientRect().right > window.innerWidth + 1);
+      return {
+        scrollX: window.scrollX,
+        docWidth: doc.scrollWidth,
+        win: window.innerWidth,
+        wide,
+      };
+    });
+    assert.equal(info.scrollX, 0, "window did not pan");
+    assert.ok(info.docWidth <= info.win + 1, "document is no wider than the screen");
+    assert.equal(info.wide, false, "no element spills past the right edge");
+  });
+
+  await check("zoom is disabled for the viewport and the shell", async () => {
+    const info = await page.evaluate(() => ({
+      meta: document.querySelector('meta[name="viewport"]').getAttribute("content"),
+      bodyTouch: getComputedStyle(document.body).touchAction,
+      htmlTouch: getComputedStyle(document.documentElement).touchAction,
+      overflowX: getComputedStyle(document.body).overflowX,
+    }));
+    assert.match(info.meta, /user-scalable=no/);
+    assert.match(info.meta, /maximum-scale=1/);
+    assert.equal(info.bodyTouch, "pan-y");
+    assert.equal(info.htmlTouch, "pan-y");
+    assert.equal(info.overflowX, "hidden");
+  });
+
+  console.log("\nGroq upload body");
+  await check("uploadFileFrom sends a sized File with a safe audio filename", async () => {
+    const out = await page.evaluate(async () => {
+      const bytes = new Uint8Array(2048).fill(7);
+      const odd = new File([bytes], 'mix : "bad"/name', { type: "audio/mpeg" });
+      const safe = await Lyra.lyricsSync.uploadFileFrom(odd);
+      const unnamed = await Lyra.lyricsSync.uploadFileFrom(new Blob([bytes], { type: "audio/wav" }));
+      const typed = await Lyra.lyricsSync.uploadFileFrom(new File([bytes], "song", { type: "audio/x-m4a" }));
+      let emptyErr = null;
+      try { await Lyra.lyricsSync.uploadFileFrom(new Blob([], { type: "audio/mpeg" })); }
+      catch (e) { emptyErr = { code: e.code, message: e.message }; }
+      return {
+        safe: { name: safe.name, size: safe.size, type: safe.type, isFile: safe instanceof File },
+        unnamed: { name: unnamed.name, type: unnamed.type },
+        typed: { name: typed.name, type: typed.type },
+        emptyErr,
+      };
+    });
+    assert.equal(out.safe.isFile, true, "materialized as a File, not a lazy reference");
+    assert.equal(out.safe.size, 2048, "full byte length is known up front");
+    assert.equal(out.safe.type, "audio/mpeg");
+    assert.doesNotMatch(out.safe.name, /["/:*?<>|]/, "filename sanitized: " + out.safe.name);
+    assert.match(out.safe.name, /\.mp3$/, "keeps its extension");
+    assert.match(out.unnamed.name, /\.wav$/);
+    assert.equal(out.unnamed.type, "audio/wav");
+    assert.match(out.typed.name, /\.m4a$/, "adds an extension from the MIME type");
+    assert.equal(out.emptyErr.code, "empty-audio", "empty audio is reported clearly");
+    assert.match(out.emptyErr.message, /empty|re-import/i);
+  });
+
+  await check("the multipart upload arrives complete, with every field and the whole file", async () => {
+    const seen = { method: null, bytes: 0, parts: [], closed: false, fields: {} };
+    const uploadServer = http.createServer((req, res) => {
+      const cors = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "authorization,content-type",
+        "Access-Control-Allow-Methods": "POST,OPTIONS",
+      };
+      if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(chunks);
+        const text = body.toString("latin1");
+        seen.method = req.method;
+        seen.bytes = body.length;
+        const boundary = (req.headers["content-type"] || "").match(/boundary=(.+)$/);
+        seen.hasBoundary = !!boundary;
+        const b = boundary ? boundary[1] : "";
+        const parts = text.split("--" + b).slice(1, -1);
+        for (const part of parts) {
+          const nameMatch = part.match(/name="([^"]+)"/);
+          if (!nameMatch) continue;
+          const value = part.split("\r\n\r\n").slice(1).join("\r\n\r\n").replace(/\r\n$/, "");
+          seen.parts.push(nameMatch[1]);
+          seen.fields[nameMatch[1]] = nameMatch[1] === "file" ? value.length : value.trim();
+        }
+        seen.closed = /--\r\n$/.test(text);
+        res.writeHead(200, Object.assign({ "Content-Type": "application/json" }, cors));
+        res.end(JSON.stringify({ text: "fake", words: [], segments: [], language: "en" }));
+      });
+    });
+    await new Promise((r) => uploadServer.listen(0, "127.0.0.1", r));
+    const endpoint = `http://127.0.0.1:${uploadServer.address().port}/upload`;
+
+    const result = await page.evaluate(async (endpoint) => {
+      const bytes = new Uint8Array(9000);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+      const file = new File([bytes], "odd name: mix.mp3", { type: "audio/mpeg" });
+      const out = await Lyra.lyricsSync.transcribeBlob(file, { key: "test-key", language: "en", endpoint });
+      return { text: out.text, language: out.language };
+    }, endpoint);
+
+    await new Promise((r) => uploadServer.close(r));
+    assert.equal(seen.method, "POST");
+    assert.equal(seen.hasBoundary, true, "browser supplied a multipart boundary");
+    assert.equal(seen.closed, true, "body ends with a closing boundary — no EOF truncation");
+    assert.deepEqual(seen.parts.sort(), ["file", "language", "model", "response_format", "temperature", "timestamp_granularities[]", "timestamp_granularities[]"]);
+    assert.equal(seen.fields.model, "whisper-large-v3");
+    assert.equal(seen.fields.response_format, "verbose_json");
+    assert.equal(seen.fields.temperature, "0");
+    assert.equal(seen.fields.language, "en");
+    assert.equal(seen.fields.file, 9000, "the complete file arrived, byte for byte");
+    assert.equal(result.text, "fake", "a 200 reply is parsed as a transcript");
+  });
+
+  await check("a truncated multipart reply is retried once over fetch", async () => {
+    let calls = 0;
+    const uploadServer = http.createServer((req, res) => {
+      const cors = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "authorization,content-type",
+        "Access-Control-Allow-Methods": "POST,OPTIONS",
+      };
+      if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
+      req.resume();
+      req.on("end", () => {
+        calls++;
+        if (calls === 1) {
+          res.writeHead(400, Object.assign({ "Content-Type": "application/json" }, cors));
+          res.end(JSON.stringify({ error: { message: "multipart: NextPart: EOF" } }));
+          return;
+        }
+        res.writeHead(200, Object.assign({ "Content-Type": "application/json" }, cors));
+        res.end(JSON.stringify({ text: "retried fine", words: [], segments: [], language: "en" }));
+      });
+    });
+    await new Promise((r) => uploadServer.listen(0, "127.0.0.1", r));
+    const endpoint = `http://127.0.0.1:${uploadServer.address().port}/upload`;
+
+    const out = await page.evaluate(async (endpoint) => {
+      const file = new File([new Uint8Array(4096)], "retry.mp3", { type: "audio/mpeg" });
+      const stages = [];
+      const transcript = await Lyra.lyricsSync.transcribeBlob(file, {
+        key: "k", language: "en", endpoint,
+        onStage: (s) => stages.push(s),
+      });
+      return { text: transcript.text, stages };
+    }, endpoint);
+
+    await new Promise((r) => uploadServer.close(r));
+    assert.equal(calls, 2, "one XHR attempt, then one fetch retry");
+    assert.equal(out.text, "retried fine", "the retry's transcript is used");
+    assert.ok(out.stages.includes("uploading"), "progress stages still reported");
+  });
+
+  await check("no page errors during the run", async () => {
+    assert.deepEqual(pageErrors, [], pageErrors.join(" | "));
+  });
+
+  await browser.close();
+  await new Promise((resolve) => server.close(resolve));
+
+  const failed = results.filter((r) => r[1] === "FAIL");
+  console.log("\n" + results.length + " checks, " + (results.length - failed.length) + " passed, " + failed.length + " failed\n");
+  if (failed.length) {
+    for (const [name, , msg] of failed) console.log("  ✗ " + name + " — " + msg);
+    process.exit(1);
+  }
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.3.0";
+  const APP_VERSION = "1.4.0";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -991,6 +991,9 @@
 
   function currentTrack() { return player.state().track; }
 
+  // Last track id the library list was drawn for (see updatePlayerUI).
+  let lastUiTrackId = null;
+
   async function tintMini() {
     const t = currentTrack();
     if (!t) return;
@@ -1043,7 +1046,12 @@
     renderSleepBadge();
     renderNpTrimZone();
     window.Lyra.lyricsSync?.mountNp();
-    if (route.view === "library" && libFilter === "songs") render();
+    // Re-render the song list only when the song itself changed — play/pause
+    // used to rebuild every row, which made the whole app feel sticky.
+    if (route.view === "library" && libFilter === "songs" && lastUiTrackId !== t.id) {
+      lastUiTrackId = t.id;
+      render();
+    }
   }
 
   function updateProgress() {
@@ -1280,50 +1288,74 @@
     toast(startAt || endAt ? `Trim saved: ${fmtTime(startAt)} – ${fmtTime(endAt || dur)}` : "Trim cleared");
   }
 
+  // A trimmed song is shown on the scissors button, not as extra stripes
+  // across the progress bar (they read as stray hairlines while playing).
   function renderNpTrimZone() {
-    const zone = $("#np-seek-zone");
-    if (!zone) return;
-    const st = player.state();
-    const t = st.track;
-    const dur = st.duration || (t && t.duration) || 0;
-    const s = Number(t && t.startAt) || 0;
-    const e = Number(t && t.endAt) || 0;
-    if (!t || !dur || (!s && !e)) {
-      zone.classList.add("hidden");
-      return;
-    }
-    zone.classList.remove("hidden");
-    zone.style.left = (s / dur) * 100 + "%";
-    zone.style.width = Math.max(0, (((e || dur) - s) / dur) * 100) + "%";
+    const btn = $("#np-trim");
+    if (!btn) return;
+    const t = player.state().track;
+    const trimmed = !!(t && ((Number(t.startAt) || 0) > 0 || (Number(t.endAt) || 0) > 0));
+    btn.classList.toggle("active", trimmed);
+    btn.setAttribute("aria-label", trimmed ? "Edit this song's start and end (trimmed)" : "Set song start and end");
   }
 
-  // drag-to-dismiss + scrub
-  let npDrag = null;
+  // swipe-down-to-dismiss + scrub
   let npSeekScrubbing = false;
 
   function wireNpGestures() {
     const drag = $("#np-drag");
-    drag.addEventListener("pointerdown", (e) => {
-      if (e.target.closest("button") || e.target.closest(".np-seek")) return;
-      if (drag.scrollTop > 2) return;
-      npDrag = { y: e.clientY, dy: 0 };
+    let startY = 0, dy = 0, active = false, startedAt = 0;
+
+    const begin = (y) => {
+      if (drag.scrollTop > 0) return false; // mid-page: let it scroll normally
+      active = true; startY = y; dy = 0; startedAt = Date.now();
       np.classList.add("no-anim");
+      return true;
+    };
+    const moveTo = (y, ev) => {
+      if (!active) return;
+      if (drag.scrollTop > 0) { finish(); return; }
+      const d = y - startY;
+      if (d <= 0) { dy = 0; np.style.transform = ""; return; }
+      dy = d;
+      if (ev && ev.cancelable) ev.preventDefault();
+      np.style.transform = `translateY(${Math.min(dy, window.innerHeight * 0.7)}px)`;
+    };
+    function finish() {
+      if (!active) return;
+      active = false;
+      np.classList.remove("no-anim");
+      np.style.transform = "";
+      const flick = dy > 55 && Date.now() - startedAt < 320;
+      if (dy > 120 || flick) closeNp();
+      dy = 0;
+    }
+
+    // Touch first: iOS cancels pointer events once it starts scrolling.
+    drag.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      begin(e.touches[0].clientY);
+    }, { passive: true });
+    drag.addEventListener("touchmove", (e) => {
+      if (!active || e.touches.length !== 1) return;
+      moveTo(e.touches[0].clientY, e);
+    }, { passive: false });
+    drag.addEventListener("touchend", finish);
+    drag.addEventListener("touchcancel", finish);
+
+    // Mouse / trackpad, for desktop and the headless tests.
+    drag.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "touch") return;
+      if (e.target.closest("button") || e.target.closest(".np-seek")) return;
+      if (!begin(e.clientY)) return;
       try { drag.setPointerCapture(e.pointerId); } catch (err) {}
     });
     drag.addEventListener("pointermove", (e) => {
-      if (!npDrag) return;
-      npDrag.dy = Math.max(0, e.clientY - npDrag.y);
-      np.style.transform = `translateY(${npDrag.dy}px)`;
+      if (e.pointerType === "touch" || !active) return;
+      moveTo(e.clientY, e);
     });
-    const end = () => {
-      if (!npDrag) return;
-      np.classList.remove("no-anim");
-      np.style.transform = "";
-      if (npDrag.dy > 130) closeNp();
-      npDrag = null;
-    };
-    drag.addEventListener("pointerup", end);
-    drag.addEventListener("pointercancel", end);
+    drag.addEventListener("pointerup", (e) => { if (e.pointerType !== "touch") finish(); });
+    drag.addEventListener("pointercancel", (e) => { if (e.pointerType !== "touch") finish(); });
 
     const seek = $("#np-seek");
     const ratioFromEvent = (e) => {
@@ -1650,11 +1682,16 @@
   function wireChrome() {
     document.querySelectorAll(".nav-btn").forEach((b) => {
       b.onclick = () => {
-        historyStack.length = 0;
-        route = { view: b.dataset.tab, params: {} };
-        if (document.startViewTransition) {
-          try { document.startViewTransition(applyRender); return; } catch (e) {}
+        const view = b.dataset.tab;
+        if (route.view === view) {
+          // Tapping the tab you're already on jumps back to the top, like Spotify.
+          $("#view").scrollTo({ top: 0, behavior: "smooth" });
+          return;
         }
+        historyStack.length = 0;
+        route = { view, params: {} };
+        // View Transitions snapshotted the whole screen (including two
+        // backdrop-blurred bars) and made tab switches feel stuck on iOS.
         applyRender();
       };
     });
@@ -1724,6 +1761,13 @@
       e.target.value = "";
       if (file) restoreBackup(file);
     });
+
+    // App shell, not a web page: no pinch-zoom (Safari ignores
+    // user-scalable=no), and no double-tap zoom.
+    const noGesture = (e) => { if (e.cancelable) e.preventDefault(); };
+    document.addEventListener("gesturestart", noGesture, { passive: false });
+    document.addEventListener("gesturechange", noGesture, { passive: false });
+    document.addEventListener("gestureend", noGesture, { passive: false });
 
     wireNpGestures();
   }
