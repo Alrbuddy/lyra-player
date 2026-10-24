@@ -228,6 +228,92 @@ async function dragTouch(page, fromY, toY) {
     assert.ok(top < 5, "scrolled back to the top, got " + top);
   });
 
+  console.log("\nDetail play button");
+  await check("the collection button turns into pause while it plays, and toggles", async () => {
+    await seed(page, null);
+    await page.evaluate(() => Lyra.app.go("detail", { kind: "artist", name: "Fixture Artist" }, false));
+    await page.waitForTimeout(250);
+    const read = () => page.evaluate(() => ({
+      aria: document.querySelector("#detail-play").getAttribute("aria-label"),
+      pauseIcon: document.querySelector("#detail-play").innerHTML.includes("M6 4h4v16H6z"),
+      playing: Lyra.player.state().playing,
+      cls: document.querySelector("#detail-play").className,
+    }));
+
+    const before = await read();
+    assert.equal(before.aria, "Play");
+    assert.equal(before.pauseIcon, false);
+
+    await page.click("#detail-play");
+    await page.waitForTimeout(500);
+    const during = await read();
+    assert.equal(during.aria, "Pause", "shows pause while playing");
+    assert.equal(during.pauseIcon, true);
+    assert.match(during.cls, /pause/);
+    assert.equal(during.playing, true);
+
+    await page.click("#detail-play");
+    await page.waitForTimeout(300);
+    const after = await read();
+    assert.equal(after.aria, "Play", "back to play when paused");
+    assert.equal(after.pauseIcon, false);
+    assert.equal(after.playing, false);
+  });
+
+  await check("pausing from the mini player updates the big button too", async () => {
+    await page.click("#detail-play");
+    await page.waitForTimeout(450);
+    await page.click("#mini-toggle");
+    await page.waitForTimeout(300);
+    const read = await page.evaluate(() => ({
+      aria: document.querySelector("#detail-play").getAttribute("aria-label"),
+      playing: Lyra.player.state().playing,
+    }));
+    assert.equal(read.playing, false);
+    assert.equal(read.aria, "Play");
+  });
+
+  await check("tapping a song row starts it right away", async () => {
+    await page.evaluate(() => Lyra.app.go("library"));
+    await page.waitForTimeout(200);
+    const started = await page.evaluate(() => {
+      const row = document.querySelector("#lib-body .song-row");
+      const t0 = performance.now();
+      row.click();
+      return new Promise((resolve) => {
+        const tick = () => {
+          const mini = document.getElementById("mini");
+          const on = !!document.querySelector("#lib-body .song-title.playing");
+          if (on && !mini.classList.contains("hidden")) resolve(performance.now() - t0);
+          else if (performance.now() - t0 > 1200) resolve(-1);
+          else requestAnimationFrame(tick);
+        };
+        tick();
+      });
+    });
+    assert.ok(started >= 0, "the song became current without a second tap");
+    assert.ok(started < 400, "row reacted in " + Math.round(started) + "ms");
+  });
+
+  await check("the bottom bars sit low, above the gesture area", async () => {
+    const bar = await page.evaluate(() => {
+      const nav = document.querySelector(".nav").getBoundingClientRect();
+      const mini = document.querySelector(".mini").getBoundingClientRect();
+      const view = getComputedStyle(document.querySelector("#view"));
+      return {
+        gap: Math.round(window.innerHeight - nav.bottom),
+        navBottom: nav.bottom,
+        vh: window.innerHeight,
+        miniBottom: mini.bottom,
+        padBottom: parseFloat(view.paddingBottom),
+      };
+    });
+    assert.ok(bar.gap >= 0 && bar.gap <= 8, "tab bar hangs " + bar.gap + "px above the bottom edge");
+    assert.ok(bar.navBottom <= bar.vh, "tab bar is not clipped");
+    assert.ok(bar.miniBottom < bar.navBottom + 1, "mini player sits above the tab bar");
+    assert.ok(bar.padBottom > 120, "content still scrolls under both bars");
+  });
+
   console.log("\nShell locks");
   await check("the page cannot scroll sideways", async () => {
     const info = await page.evaluate(() => {

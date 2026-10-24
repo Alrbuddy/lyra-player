@@ -159,7 +159,11 @@
       } else {
         index = startIndex;
       }
-      const track = await window.Lyra.db.getTrack(currentId());
+      // Start from the record already in memory when the caller has it: a
+      // round-trip to IndexedDB before setting audio.src is what made a tap
+      // feel like it needed a second press.
+      let track = opts.firstTrack && opts.firstTrack.id === currentId() ? opts.firstTrack : null;
+      if (!track) track = await window.Lyra.db.getTrack(currentId());
       if (track) await loadTrack(track, true);
       emit("queue", state());
     },

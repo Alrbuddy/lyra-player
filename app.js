@@ -982,7 +982,29 @@
     let idx = ids.indexOf(startId);
     if (idx < 0) idx = 0;
     lastSource = source || "Library";
-    player.playQueue(ids, idx, { shuffle: !!shuffle });
+    player.playQueue(ids, idx, { shuffle: !!shuffle, firstTrack: list[idx] });
+  }
+
+  // Is the player running exactly this collection (order aside, so shuffle
+  // does not turn the pause button back into a play button)?
+  function sameCollection(st, list) {
+    if (!st.track || !list.length || st.queue.length !== list.length) return false;
+    const want = new Set(list.map((t) => t.id));
+    return st.queue.every((id) => want.has(id));
+  }
+
+  // The big button on a playlist/album/artist page: pause while this
+  // collection is playing, play otherwise.
+  function updateDetailPlayButton() {
+    const btn = $("#detail-play");
+    if (!btn) return;
+    const d = detailData(route.params);
+    const list = (d && d.list) || [];
+    const st = player.state();
+    const playing = list.length > 0 && sameCollection(st, list) && st.playing;
+    btn.innerHTML = playing ? PAUSE_SVG : PLAY_SVG;
+    btn.classList.toggle("pause", playing);
+    btn.setAttribute("aria-label", playing ? "Pause" : "Play");
   }
 
   // ---------- Mini player / Now Playing ----------
@@ -1046,6 +1068,7 @@
     renderSleepBadge();
     renderNpTrimZone();
     window.Lyra.lyricsSync?.mountNp();
+    if (route.view === "detail") updateDetailPlayButton();
     // Re-render the song list only when the song itself changed — play/pause
     // used to rebuild every row, which made the whole app feel sticky.
     if (route.view === "library" && libFilter === "songs" && lastUiTrackId !== t.id) {
@@ -1667,7 +1690,13 @@
       paintDetailHero(route.params);
       const d = detailData(route.params);
       const playBtn = $("#detail-play");
-      if (playBtn && d) playBtn.onclick = () => playList(d.list, d.list[0] && d.list[0].id, d.title);
+      if (playBtn && d) playBtn.onclick = () => {
+        if (!d.list.length) return;
+        // Already playing this collection: the big button is a pause button.
+        if (sameCollection(player.state(), d.list)) { player.toggle(); return; }
+        playList(d.list, d.list[0].id, d.title);
+      };
+      updateDetailPlayButton();
       const shBtn = $("#detail-shuffle");
       if (shBtn && d) shBtn.onclick = () => playList(d.list, d.list[0] && d.list[0].id, d.title, true);
       const likeAll = $("#detail-like-all");
