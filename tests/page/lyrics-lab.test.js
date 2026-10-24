@@ -219,6 +219,79 @@ async function closeOverlays(page) {
     assert.deepEqual(ids, [true, true, true, true]);
   });
 
+  await check("Sync my lyrics explains what it needs instead of sitting grey", async () => {
+    const info = await page.evaluate(() => {
+      const align = document.getElementById("llab-align");
+      const tip = document.getElementById("llab-tip");
+      return {
+        disabled: align.disabled,
+        title: align.title,
+        tip: tip ? tip.textContent : "",
+        trackHasWords: !!(Lyra.player.state().track.lyricsWords || []).length,
+      };
+    });
+    assert.equal(info.trackHasWords, false, "fixture has no transcript yet");
+    assert.equal(info.disabled, true);
+    assert.match(info.title, /Auto-sync/i, "disabled reason: " + info.title);
+    assert.match(info.tip, /Auto-sync transcribes/i, "tip text: " + info.tip);
+  });
+
+  await check("auto-sync turns the transcript into synced lyrics when there are none", async () => {
+    await page.route("https://api.groq.com/**", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: "hello there again now",
+        language: "en",
+        words: [
+          { word: "hello", start: 0.2, end: 0.6 },
+          { word: "there", start: 0.6, end: 1.0 },
+          { word: "again", start: 2.4, end: 2.8 },
+          { word: "now", start: 2.8, end: 3.2 },
+        ],
+        segments: [],
+      }),
+    }));
+    // Start from a song with no lyrics of its own, like a fresh download —
+    // keeping the fixture so the later lyrics-view checks still have 12 lines.
+    const original = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
+      const saved = { lyrics: t.lyrics, synced: t.lyricsSynced };
+      t.lyrics = "";
+      t.lyricsSynced = null;
+      t.lyricsWords = null;
+      await Lyra.db.putTrack(t);
+      await Lyra.app.refreshData();
+      return saved;
+    });
+    await page.evaluate(() => document.getElementById("llab-auto").click());
+    await page.waitForFunction(() => /words saved/.test((document.getElementById("llab-status") || {}).textContent || ""), null, { timeout: 15000 });
+    const out = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
+      return {
+        lyrics: t.lyrics,
+        lines: ((t.lyricsSynced || {}).lines || []).length,
+        source: (t.lyricsSynced || {}).source,
+        status: document.getElementById("llab-status").textContent,
+        alignEnabled: !document.getElementById("llab-align").disabled,
+      };
+    });
+    assert.match(out.status, /lyrics synced/);
+    assert.match(out.lyrics, /hello there/);
+    assert.ok(out.lines >= 2, "a pause splits the lines, got " + out.lines);
+    assert.equal(out.source, "transcript");
+    assert.equal(out.alignEnabled, true, "Sync my lyrics is usable once words exist");
+    await page.unroute("https://api.groq.com/**");
+    await page.evaluate(async (saved) => {
+      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
+      t.lyrics = saved.lyrics;
+      t.lyricsSynced = saved.synced;
+      t.lyricsWords = null;
+      await Lyra.db.putTrack(t);
+      await Lyra.app.refreshData();
+    }, original);
+  });
+
   await check("lyrics view gets the toolbar and timed lines", async () => {
     await openLyrics(page);
     const info = await page.evaluate(() => ({

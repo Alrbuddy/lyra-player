@@ -58,7 +58,32 @@
     return artUrls.get(track.id);
   }
 
+  let loadToken = 0;
+
+  // Starting a song is the fragile part on iOS: a play() promise that is still
+  // pending when the source changes rejects with AbortError, and revoking the
+  // blob URL of the song that is playing can leave the element silent. Pause
+  // first, swap the source, then play with one retry when the new source is
+  // actually ready.
+  async function startPlayback(token) {
+    if (token !== loadToken) return;
+    try {
+      await audio.play();
+    } catch (e) {
+      if (token !== loadToken) return;
+      if (e && (e.name === "AbortError" || e.name === "NotAllowedError")) {
+        audio.addEventListener("canplay", () => {
+          if (token === loadToken) audio.play().catch(() => emit("state", state()));
+        }, { once: true });
+        return;
+      }
+      emit("state", state());
+    }
+  }
+
   async function loadTrack(track, autoplay) {
+    const token = ++loadToken;
+    audio.pause();
     if (currentUrl) {
       URL.revokeObjectURL(currentUrl);
       currentUrl = null;
@@ -71,6 +96,7 @@
     if (track) {
       currentUrl = URL.createObjectURL(track.audio);
       audio.src = currentUrl;
+      audio.load();
       audio.addEventListener("loadedmetadata", seekToStart, { once: true });
       updateMediaSession(track);
     } else {
@@ -79,9 +105,8 @@
       if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
     }
     emit("track", track);
-    if (track && autoplay) {
-      try { await audio.play(); } catch (e) { emit("state", state()); }
-    }
+    emit("time", state());
+    if (track && autoplay) await startPlayback(token);
   }
 
   function updateMediaSession(track) {
@@ -158,6 +183,18 @@
         index = 0;
       } else {
         index = startIndex;
+      }
+      // Tapping the song that is already loaded should not rebuild the audio
+      // source: pause/resume it instead (re-tapping used to stall playback).
+      if (current && current.id === currentId()) {
+        // A finished song should start over rather than sit at the end.
+        const dur = Number.isFinite(audio.duration) ? audio.duration : 0;
+        if (audio.ended || (dur && audio.currentTime >= dur - 0.15)) {
+          try { audio.currentTime = startOf(current); } catch (e) { /* ignore */ }
+        }
+        if (audio.paused) await startPlayback(loadToken);
+        emit("queue", state());
+        return;
       }
       // Start from the record already in memory when the caller has it: a
       // round-trip to IndexedDB before setting audio.src is what made a tap

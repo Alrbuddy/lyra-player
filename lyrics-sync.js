@@ -180,6 +180,41 @@
    * lines: [{ t, end, text, words: [{ text, t, e, p }] }]
    * With no matched words at all, lines get t: null (no invented timing).
    */
+  /**
+   * linesFromWords(words) -> synced lines.
+   * After transcribing there is no user text to align, so the transcript is
+   * grouped into readable lines: break on pauses, punctuation, or length.
+   */
+  const LINE_WORDS = 7;
+  function linesFromWords(words) {
+    const list = Array.isArray(words) ? words.filter((w) => w && (w.word || w.text)) : [];
+    const out = [];
+    let cur = null;
+    for (let i = 0; i < list.length; i++) {
+      const w = list[i];
+      const start = Number.isFinite(Number(w.start)) ? Number(w.start) : (cur ? cur.end : 0);
+      const end = Number.isFinite(Number(w.end)) ? Number(w.end) : start + 0.3;
+      const word = String(w.word != null ? w.word : w.text).trim();
+      const prev = cur && cur.words.length ? cur.words[cur.words.length - 1] : null;
+      const gap = prev ? start - prev.e : 0;
+      const longEnough = cur && (cur.words.length >= LINE_WORDS || cur.text.length > 42);
+      const punctuation = prev && /[.!?]$/.test(prev.text);
+      if (cur && (gap > 0.65 || longEnough || punctuation)) { out.push(cur); cur = null; }
+      if (!cur) cur = { t: start, end, text: "", words: [] };
+      cur.words.push({ text: word, t: start, e: Math.max(start + 0.05, end), p: w.probability != null ? w.probability : null });
+      cur.text = cur.text ? cur.text + " " + word : word;
+      cur.end = Math.max(cur.end, end);
+    }
+    if (cur) out.push(cur);
+    // Keep times monotonic even if the transcript jitters.
+    let last = -1;
+    return out.map((l) => {
+      const t = Math.max(l.t, last + 0.01);
+      last = t;
+      return { t, end: Math.max(l.end, t + 0.3), text: l.text, words: l.words };
+    });
+  }
+
   function alignLyrics(userText, words) {
     const transcript = (Array.isArray(words) ? words : []).map((w) => {
       const start = Number(w.start);
@@ -724,6 +759,7 @@
           <button class="btn ghost" id="llab-align" type="button">Sync my lyrics</button>
           <button class="btn ghost" id="llab-import" type="button">Import .lrc</button>
           <button class="btn ghost" id="llab-export" type="button">Export .lrc</button>
+          <div class="llab-hint" id="llab-tip"></div>
           <div class="llab-status" id="llab-status"></div>`;
         drag.appendChild(el);
         doc().getElementById("llab-auto").onclick = () => runAutoSync();
@@ -733,10 +769,18 @@
       }
       const alignBtn = doc().getElementById("llab-align");
       const exportBtn = doc().getElementById("llab-export");
+      const hasWords = !!(track.lyricsWords && track.lyricsWords.length);
+      const hasLyrics = !!(track.lyrics && track.lyrics.trim());
       if (alignBtn) {
-        const readyToAlign = !!(track.lyricsWords && track.lyricsWords.length && track.lyrics);
+        const readyToAlign = hasWords && hasLyrics;
         alignBtn.disabled = !readyToAlign;
-        alignBtn.title = readyToAlign ? "" : "Transcribe this song first";
+        alignBtn.title = readyToAlign ? "" : hasWords ? "Paste lyrics in Edit lyrics first" : "Auto-sync this song first";
+      }
+      const tip = doc().getElementById("llab-tip");
+      if (tip) {
+        if (!hasWords) tip.textContent = "Auto-sync transcribes this song and syncs the lyrics for you.";
+        else if (!hasLyrics) tip.textContent = "Paste your own words in Edit lyrics, then Sync my lyrics matches them to the audio.";
+        else tip.textContent = "";
       }
       if (exportBtn) {
         const canExport = hasTiming(track);
@@ -779,10 +823,26 @@
         live.transcriptLang = fresh.transcriptLang;
         live.transcribedAt = fresh.transcribedAt;
       }
+      // With no lyrics of your own, the transcript becomes the lyrics right
+      // away, already synced — no second tap.
+      const hasOwnLyrics = !!(fresh.lyrics && fresh.lyrics.trim());
+      if (!hasOwnLyrics) {
+        const lines = linesFromWords(out.words);
+        fresh.lyrics = lines.map((l) => l.text).join("\n");
+        fresh.lyricsSynced = { lines, matchRate: 1, source: "transcript", createdAt: Date.now() };
+        await db().putTrack(fresh);
+        if (live && live.id === fresh.id) {
+          live.lyrics = fresh.lyrics;
+          live.lyricsSynced = fresh.lyricsSynced;
+        }
+      }
       await refreshTracks();
       const low = out.words.filter((w) => w.probability != null && w.probability < 0.5).length;
-      setStatus(out.words.length + " words saved" + (low ? " · " + Math.round((low / out.words.length) * 100) + "% low-confidence" : ""), "ok");
-      toast("Transcript saved");
+      const lowNote = low ? " · " + Math.round((low / out.words.length) * 100) + "% low-confidence" : "";
+      setStatus(out.words.length + " words saved" + (hasOwnLyrics ? lowNote : " · lyrics synced" + lowNote), "ok");
+      toast(hasOwnLyrics ? "Transcript saved — tap Sync my lyrics" : "Lyrics synced from the transcript");
+      mountNp();
+      if (!hasOwnLyrics) refreshLyricsView();
     } catch (e) {
       const msg = e && e.code === "cors"
         ? "Blocked: this browser couldn't reach Groq (CORS or network)."

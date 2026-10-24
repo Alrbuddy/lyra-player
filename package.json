@@ -1,6 +1,6 @@
 {
   "name": "lyra",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "private": true,
   "description": "Lyra offline music PWA",
   "scripts": {

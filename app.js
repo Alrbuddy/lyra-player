@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.1";
+  const APP_VERSION = "1.4.2";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -1077,15 +1077,26 @@
     }
   }
 
+  // Which song the progress bar currently describes. iOS keeps the previous
+  // song's duration/position for a moment after the source changes, so a new
+  // song starts painting from zero until its own metadata arrives.
+  let progressTrackId = null;
+
   function updateProgress() {
     const st = player.state();
-    const pct = st.duration ? (st.currentTime / st.duration) * 100 : 0;
+    const t = st.track;
+    if (!t) return;
+    const isNew = progressTrackId !== t.id;
+    progressTrackId = t.id;
+    const duration = isNew ? (Number(t.duration) || 0) : st.duration;
+    const time = isNew ? (Number(t.startAt) || 0) : st.currentTime;
+    const pct = duration ? (time / duration) * 100 : 0;
     const bar = $("#mini-progress i");
     if (bar) bar.style.width = pct + "%";
     const fill = $("#np-seek-fill i");
     if (fill && !npSeekScrubbing) fill.style.width = pct + "%";
-    $("#np-elapsed").textContent = fmtTime(st.currentTime);
-    $("#np-remain").textContent = "-" + fmtTime(Math.max(0, st.duration - st.currentTime));
+    $("#np-elapsed").textContent = fmtTime(time);
+    $("#np-remain").textContent = "-" + fmtTime(Math.max(0, duration - time));
   }
 
   function openNp() {

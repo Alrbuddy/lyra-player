@@ -228,6 +228,69 @@ async function dragTouch(page, fromY, toY) {
     assert.ok(top < 5, "scrolled back to the top, got " + top);
   });
 
+  console.log("\nSwitching songs");
+  await check("switching songs resets the clock to the new track", async () => {
+    await seed(page, null);
+    const pair = await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      await Lyra.db.addTrack({
+        title: "Second Song", artist: base.artist, album: "", duration: 100,
+        audio: base.audio, addedAt: Date.now() + 5, plays: 0, liked: false, lyrics: "",
+      });
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+      return Lyra.app.tracks.map((t) => ({ id: t.id, title: t.title }));
+    });
+    const a = pair.find((t) => t.title.indexOf("Shell Fixture") === 0);
+    const b = pair.find((t) => t.title === "Second Song");
+
+    await page.click(`#lib-body [data-play-track="${a.id}"]`);
+    await page.waitForTimeout(500);
+    await page.evaluate(() => Lyra.player.seek(30));
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => document.getElementById("np-elapsed").textContent), "0:30");
+
+    await page.click(`#lib-body [data-play-track="${b.id}"]`);
+    await page.waitForTimeout(260);
+    const now = await page.evaluate(() => ({
+      elapsed: document.getElementById("np-elapsed").textContent,
+      remain: document.getElementById("np-remain").textContent,
+      playing: Lyra.player.state().playing,
+      id: Lyra.player.state().track.id,
+    }));
+    assert.equal(now.id, b.id, "new song is loaded");
+    assert.equal(now.elapsed, "0:00", "starts from zero, not the old position");
+    assert.equal(now.remain, "-1:40", "shows the new song's length");
+    assert.equal(now.playing, true, "and it is actually playing");
+  });
+
+  await check("tapping the song that is already playing keeps it playing", async () => {
+    const before = await page.evaluate(() => ({
+      id: Lyra.player.state().track.id,
+      t: Lyra.player.state().currentTime,
+    }));
+    await page.evaluate((id) => document.querySelector(`#lib-body [data-play-track="${id}"]`).click(), before.id);
+    await page.waitForTimeout(700);
+    const after = await page.evaluate(() => ({
+      id: Lyra.player.state().track.id,
+      t: Lyra.player.state().currentTime,
+      playing: Lyra.player.state().playing,
+    }));
+    assert.equal(after.id, before.id);
+    assert.equal(after.playing, true, "repeated taps do not stall playback");
+    assert.ok(after.t >= before.t - 1, "it continued instead of restarting");
+  });
+
+  await check("tapping a paused song resumes it", async () => {
+    await page.evaluate(() => Lyra.player.toggle());
+    await page.waitForTimeout(250);
+    assert.equal(await page.evaluate(() => Lyra.player.state().playing), false);
+    const id = await page.evaluate(() => Lyra.player.state().track.id);
+    await page.evaluate((id) => document.querySelector(`#lib-body [data-play-track="${id}"]`).click(), id);
+    await page.waitForTimeout(600);
+    assert.equal(await page.evaluate(() => Lyra.player.state().playing), true);
+  });
+
   console.log("\nDetail play button");
   await check("the collection button turns into pause while it plays, and toggles", async () => {
     await seed(page, null);
