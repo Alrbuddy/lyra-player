@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.0.0";
+  const APP_VERSION = "1.3.0";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -540,8 +540,67 @@
       <button class="set-row" id="set-clear" style="width:100%;text-align:left">
         <div><div class="l" style="color:#ff6b6b">Clear library</div><div class="s">Delete every song, playlist, and setting on this device.</div></div>
       </button>
-      <div class="set-row"><div><div class="l">Version</div><div class="s">Lyra ${APP_VERSION}</div></div></div>
+      <button class="set-row" id="set-update" style="width:100%;text-align:left">
+        <div><div class="l">Check for updates</div><div class="s" id="set-update-sub">Downloads the newest build. Songs, playlists and lyrics stay on this device.</div></div>
+      </button>
+      <div class="set-row"><div><div class="l">Version</div><div class="s" id="set-version">Lyra ${APP_VERSION}</div></div></div>
     </div>`;
+  }
+
+  // ---------- Version / updates ----------
+  // The installed build is the service worker cache on this device; the latest
+  // build is the VERSION sw.js serves right now. They differ until the phone
+  // picks up a deploy, which is what makes this line actually move.
+  function versionLabel(installed, latest) {
+    const parts = [`Lyra ${APP_VERSION}`];
+    if (installed) parts.push(`build ${installed}`);
+    if (installed && latest && latest !== installed) parts.push(`${latest} available`);
+    return parts.join(" · ");
+  }
+
+  function newestVersion(list) {
+    const num = (v) => parseInt(String(v).replace(/^v/, ""), 10) || 0;
+    return list.slice().sort((a, b) => num(b) - num(a))[0] || "";
+  }
+
+  async function installedBuild() {
+    if (!window.caches) return "";
+    try {
+      const keys = await caches.keys();
+      return newestVersion(keys.filter((k) => k.indexOf("lyra-") === 0).map((k) => k.slice(5)));
+    } catch (e) { return ""; }
+  }
+
+  async function latestBuild() {
+    try {
+      const res = await fetch("sw.js?build=" + Date.now(), { cache: "no-store" });
+      if (!res.ok) return "";
+      const m = (await res.text()).match(/const VERSION\s*=\s*"([^"]+)"/);
+      return m ? m[1] : "";
+    } catch (e) { return ""; }
+  }
+
+  async function fillVersionInfo() {
+    const label = $("#set-version");
+    const sub = $("#set-update-sub");
+    if (!label) return;
+    const [installed, latest] = await Promise.all([installedBuild(), latestBuild()]);
+    if (!document.body.contains(label)) return; // left Settings while fetching
+    label.textContent = versionLabel(installed, latest);
+    if (!sub) return;
+    if (!latest) sub.textContent = "Couldn't reach the server — you may be offline.";
+    else if (installed && latest !== installed) sub.textContent = `A newer build (${latest}) is ready — tap to update.`;
+    else sub.textContent = "You're on the latest build. Songs, playlists and lyrics stay on this device.";
+  }
+
+  async function checkForUpdates() {
+    if ("serviceWorker" in navigator) {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg) await reg.update();
+      } catch (e) { /* offline — the reload below still retries */ }
+    }
+    location.reload();
   }
 
   async function fillStorageInfo() {
@@ -1553,6 +1612,8 @@
 
     if (view === "settings") {
       fillStorageInfo();
+      fillVersionInfo();
+      $("#set-update").onclick = checkForUpdates;
       window.Lyra.lyricsSync?.mountSettings(v);
       db.getSetting("lyricsAutoScroll").then((v2) => { $("#set-autoscroll").checked = !!v2; });
       $("#set-autoscroll").onchange = (e) => db.setSetting("lyricsAutoScroll", e.target.checked);
@@ -1714,6 +1775,7 @@
     _test: {
       viewLibrary, viewHome, viewSearch, dominantColor, searchResults, detailData,
       artistsOf, albumsOf, albumName, artistOf, isRealAlbum, editInfoSheet, trackMenu,
+      versionLabel, newestVersion, installedBuild, latestBuild,
     },
   };
 })();

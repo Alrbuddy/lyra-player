@@ -1,5 +1,5 @@
 /* Lyra service worker — cache-first, fully offline. Bump VERSION after any cached-file change. */
-const VERSION = "v6";
+const VERSION = "v7";
 const CACHE = "lyra-" + VERSION;
 
 const ASSETS = [
@@ -36,6 +36,9 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
+  // The worker script itself must come from the network, never from cache —
+  // Settings reads its VERSION to tell you which build is deployed.
+  if (new URL(e.request.url).pathname.endsWith("/sw.js")) return;
   e.respondWith(
     caches.match(e.request, { ignoreSearch: true }).then((hit) => {
       if (hit) return hit;

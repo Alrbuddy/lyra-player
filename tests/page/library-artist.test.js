@@ -284,6 +284,56 @@ async function subtitle(page, id) {
     assert.ok(box.artist.width > 240, "fields span the sheet width");
     assert.ok(box.note.bottom <= box.vh, "explanatory note is not clipped");
     assert.ok(box.save.height >= 38 && box.save.bottom <= box.vh, "Save is reachable");
+    // Leave the sheet closed so later checks are not clicking through the backdrop.
+    await page.click("#ef-cancel");
+    await page.waitForTimeout(120);
+  });
+
+  console.log("\nSettings version");
+  await check("the version label reports the installed build and flags a newer one", async () => {
+    const labels = await page.evaluate(() => ({
+      same: Lyra.app._test.versionLabel("v7", "v7"),
+      stale: Lyra.app._test.versionLabel("v2", "v7"),
+      none: Lyra.app._test.versionLabel("", ""),
+      offline: Lyra.app._test.versionLabel("v7", ""),
+      newest: Lyra.app._test.newestVersion(["v9", "v10", "v2"]),
+    }));
+    assert.equal(labels.same, "Lyra 1.3.0 · build v7");
+    assert.equal(labels.stale, "Lyra 1.3.0 · build v2 · v7 available", "a stale phone must show both builds");
+    assert.equal(labels.none, "Lyra 1.3.0");
+    assert.equal(labels.offline, "Lyra 1.3.0 · build v7");
+    assert.equal(labels.newest, "v10", "numeric, not string, ordering");
+  });
+
+  await check("Settings shows the version, the live build state and an update row", async () => {
+    await page.evaluate(() => Lyra.app.go("settings"));
+    await page.waitForTimeout(700);
+    const info = await page.evaluate(() => ({
+      version: document.getElementById("set-version").textContent,
+      sub: document.getElementById("set-update-sub").textContent,
+      hasUpdateRow: !!document.getElementById("set-update"),
+    }));
+    assert.ok(info.hasUpdateRow);
+    assert.match(info.version, /^Lyra 1\.3\.0/, "version text: " + info.version);
+    assert.match(info.version, /build v\d+/, "includes the installed build: " + info.version);
+    assert.match(info.sub, /latest build|newer build|offline/i, "status text: " + info.sub);
+  });
+
+  await check("Check for updates reloads into a working app", async () => {
+    await page.evaluate(() => Lyra.app.go("settings"));
+    await page.waitForTimeout(200);
+    // Bring the row out from under the floating bars before tapping it.
+    await page.evaluate(() => {
+      document.getElementById("set-update").scrollIntoView({ block: "center" });
+    });
+    await page.waitForTimeout(150);
+    await Promise.all([
+      page.waitForNavigation({ timeout: 15000 }).catch(() => {}),
+      page.click("#set-update"),
+    ]);
+    await page.waitForFunction(() => window.Lyra && Lyra.app && Lyra.app.tracks, null, { timeout: 10000 });
+    const ok = await page.evaluate(() => !!document.querySelector(".nav-btn"));
+    assert.equal(ok, true);
   });
 
   await check("no page errors during the run", async () => {
