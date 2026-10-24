@@ -440,6 +440,32 @@ async function dragTouch(page, fromY, toY) {
     assert.match(text, /win \d+/);
     assert.match(text, /screen \d+/);
     assert.match(text, /dpr [\d.]+/);
+    assert.match(text, /standalone|browser|fullscreen|minimal-ui/, "the running mode is reported");
+    assert.match(text, /bar \d+/, "the bar's bottom edge is reported");
+  });
+
+  await check("a screen taller than the real viewport is not trusted blindly", async () => {
+    // Simulate iOS reporting screen 844 while the page can only really be 797
+    // tall: the taller shell must be dropped again, or the tab bar would be
+    // painted where nothing can be tapped.
+    const out = await page.evaluate(() => {
+      const w = window.innerWidth, h = 797;
+      document.documentElement.style.setProperty("--app-h", "797px");
+      Object.defineProperty(window.screen, "height", { value: 844, configurable: true });
+      Lyra.app._test.syncViewport();
+      const nav = document.querySelector(".nav");
+      const r = nav.getBoundingClientRect();
+      const hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+      return {
+        appH: getComputedStyle(document.documentElement).getPropertyValue("--app-h").trim(),
+        navBottom: Math.round(r.bottom),
+        reachable: !!(hit && nav.contains(hit)),
+        viewportH: window.innerHeight,
+      };
+    });
+    assert.equal(out.reachable, true, "the tab bar stays tappable");
+    assert.ok(out.navBottom <= out.viewportH, "the bar is inside the real viewport: " + out.navBottom + " vs " + out.viewportH);
+    assert.equal(out.appH, out.viewportH + "px", "the shell falls back to the measured height");
   });
 
   await check("a viewport mismatch lifts both bars by exactly that much", async () => {

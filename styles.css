@@ -24,7 +24,9 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body {
-  margin: 0; padding: 0; height: 100%; width: 100%;
+  /* Same box as the shell: if the shell is taller than the reported viewport
+     (iOS sometimes under-reports it) the body must not clip the bars. */
+  margin: 0; padding: 0; height: var(--app-h, 100%); width: 100%;
   background: var(--bg); color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   overscroll-behavior: none;

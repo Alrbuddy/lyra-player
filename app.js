@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.3";
+  const APP_VERSION = "1.4.4";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -581,18 +581,35 @@
     } catch (e) { return ""; }
   }
 
+  // "standalone" when Lyra runs from the Home Screen, "browser" in a normal
+  // Safari tab or an in-app browser (where the strip at the bottom belongs to
+  // the browser, not to us).
+  function displayMode() {
+    const mm = (q) => {
+      try { return window.matchMedia && window.matchMedia(q).matches; } catch (e) { return false; }
+    };
+    if (mm("(display-mode: standalone)") || window.navigator.standalone === true) return "standalone";
+    if (mm("(display-mode: fullscreen)")) return "fullscreen";
+    if (mm("(display-mode: minimal-ui)")) return "minimal-ui";
+    return "browser";
+  }
+
   // Numbers to read off a screenshot when iOS lays the page out oddly.
   function fillDisplayInfo() {
     const el = $("#set-display");
     if (!el) return;
     const vv = window.visualViewport;
+    const nav = $("#nav");
     const appH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-h")) || 0;
     const parts = [
+      displayMode(),
       "app " + Math.round(appH),
       "win " + window.innerHeight,
       vv ? "vv " + Math.round(vv.height) : "vv none",
       vv ? "top " + Math.round(vv.offsetTop) : "",
+      "doc " + document.documentElement.clientHeight,
       "screen " + window.screen.height,
+      nav ? "bar " + Math.round(nav.getBoundingClientRect().bottom) : "",
       "dpr " + window.devicePixelRatio,
     ];
     el.textContent = parts.filter(Boolean).join(" · ");
@@ -1851,12 +1868,42 @@
   // outside the part you can actually see. Lift the bars by that difference and
   // size the scrolling shell to the visible height, so what you see is what you
   // can tap.
+  // Is a bar really tappable where we just painted it? elementFromPoint only
+  // answers inside the box iOS actually hit-tests in, so this catches the case
+  // where we sized the shell taller than the page can really be.
+  function barIsReachable(nav) {
+    if (!nav) return false;
+    const r = nav.getBoundingClientRect();
+    if (r.height <= 0) return false;
+    const el = document.elementFromPoint(
+      Math.round(r.left + r.width / 2),
+      Math.round(r.top + r.height / 2)
+    );
+    return !!(el && (nav === el || nav.contains(el)));
+  }
+
   function syncViewport() {
     const root = document.documentElement;
     const vv = window.visualViewport;
-    const h = Math.round((vv && vv.height) || window.innerHeight || 0);
-    if (h > 0) root.style.setProperty("--app-h", h + "px");
+    const nav = document.getElementById("nav");
     root.style.setProperty("--vv-lift", "0px");
+
+    // iOS sometimes reports the viewport about one status bar (47px) shorter
+    // than the box it actually paints and hit-tests in: the bars then float in
+    // the air and taps land above what you touched. Take the tallest plausible
+    // reading, and keep it only if the tab bar is really tappable there.
+    const measured = Math.round(Math.max(
+      (vv && vv.height) || 0, window.innerHeight || 0,
+      document.documentElement.clientHeight || 0
+    ));
+    const screenH = Math.round((window.screen && window.screen.height) || 0);
+    const portrait = !(window.matchMedia && window.matchMedia("(orientation: landscape)").matches);
+    const candidate = (screenH > measured && screenH - measured <= 60 && portrait) ? screenH : measured;
+
+    const apply = (h) => { if (h > 0) root.style.setProperty("--app-h", h + "px"); };
+
+    apply(candidate);
+    if (candidate !== measured && !barIsReachable(nav)) apply(measured);
   }
 
   function watchViewport() {
@@ -1914,6 +1961,7 @@
       viewLibrary, viewHome, viewSearch, dominantColor, searchResults, detailData,
       artistsOf, albumsOf, albumName, artistOf, isRealAlbum, editInfoSheet, trackMenu,
       versionLabel, newestVersion, installedBuild, latestBuild, syncViewport,
+      displayMode, fillDisplayInfo,
       get appVersion() { return APP_VERSION; },
     },
   };
