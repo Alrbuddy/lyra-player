@@ -136,24 +136,24 @@
     render();
   }
 
+  function applyRender() {
+    const v = $("#view");
+    if (route.view === "home") v.innerHTML = viewHome();
+    else if (route.view === "search") v.innerHTML = viewSearch();
+    else if (route.view === "library") v.innerHTML = viewLibrary();
+    else if (route.view === "import") v.innerHTML = viewImport();
+    else if (route.view === "settings") v.innerHTML = viewSettings();
+    else if (route.view === "detail") v.innerHTML = viewDetail(route.params);
+    bindView(route.view);
+    document.querySelectorAll(".nav-btn").forEach((b) =>
+      b.classList.toggle("on", b.dataset.tab === route.view));
+    v.scrollTop = 0;
+  }
+
+  // Always synchronous — callers often query the DOM right after rendering.
+  // View Transitions wrap nav tab switches only (see wireChrome).
   function render() {
-    const fn = () => {
-      const v = $("#view");
-      if (route.view === "home") v.innerHTML = viewHome();
-      else if (route.view === "search") v.innerHTML = viewSearch();
-      else if (route.view === "library") v.innerHTML = viewLibrary();
-      else if (route.view === "import") v.innerHTML = viewImport();
-      else if (route.view === "settings") v.innerHTML = viewSettings();
-      else if (route.view === "detail") v.innerHTML = viewDetail(route.params);
-      bindView(route.view);
-      document.querySelectorAll(".nav-btn").forEach((b) =>
-        b.classList.toggle("on", b.dataset.tab === route.view));
-      v.scrollTop = 0;
-    };
-    if (document.startViewTransition) {
-      try { document.startViewTransition(fn); return; } catch (e) {}
-    }
-    fn();
+    applyRender();
   }
 
   // ---------- Shared row ----------
@@ -783,7 +783,7 @@
     const t = currentTrack();
     if (!t) return;
     const c = await dominantColor(t);
-    np.style.background = `linear-gradient(180deg, ${rgba(c, 0.85)} 0%, ${rgba(c, 0.35)} 45%, #0a0a0a 100%)`;
+    np.style.background = `linear-gradient(180deg, ${rgba(c, 0.85)} 0%, ${rgba(c, 0.35)} 45%, rgba(10,10,10,0) 100%), #0a0a0a`;
     const card = $("#np-lyrics-card");
     if (card) card.style.background = rgba(c, 0.4);
   }
@@ -799,6 +799,7 @@
     $("#mini-art").innerHTML = artHTML(t, "width:40px;height:40px");
     $("#mini-title").textContent = t.title;
     $("#mini-artist").textContent = t.artist;
+    if (!$("#mini-like").innerHTML) $("#mini-like").innerHTML = HEART_SVG;
     setHeartState($("#mini-like"), t);
     $("#mini-toggle").innerHTML = st.playing ? PAUSE_SVG : PLAY_SVG;
     $("#mini-toggle").classList.add("fill");
@@ -808,6 +809,7 @@
     $("#np-cover").innerHTML = artHTML(t);
     $("#np-title").textContent = t.title;
     $("#np-artist").textContent = t.artist;
+    if (!$("#np-like").innerHTML) $("#np-like").innerHTML = HEART_SVG;
     setHeartState($("#np-like"), t);
     $("#np-play").innerHTML = st.playing ? PAUSE_SVG : PLAY_SVG;
     $("#np-shuffle").innerHTML = SHUFFLE_SVG;
@@ -1184,7 +1186,14 @@
   // ---------- Global wiring ----------
   function wireChrome() {
     document.querySelectorAll(".nav-btn").forEach((b) => {
-      b.onclick = () => { historyStack.length = 0; go(b.dataset.tab, {}, false); };
+      b.onclick = () => {
+        historyStack.length = 0;
+        route = { view: b.dataset.tab, params: {} };
+        if (document.startViewTransition) {
+          try { document.startViewTransition(applyRender); return; } catch (e) {}
+        }
+        applyRender();
+      };
     });
 
     mini.addEventListener("click", (e) => {
@@ -1237,14 +1246,16 @@
     $("#backdrop").onclick = closeSheet;
 
     $("#file-input").addEventListener("change", (e) => {
-      const files = e.target.files;
+      const files = [...e.target.files]; // FileList is live — copy before clearing
       e.target.value = "";
+      if (!files.length) return;
       if (route.view !== "import") go("import", {}, false);
       importFiles(files);
     });
     $("#restore-input").addEventListener("change", (e) => {
-      if (e.target.files[0]) restoreBackup(e.target.files[0]);
+      const file = e.target.files[0];
       e.target.value = "";
+      if (file) restoreBackup(file);
     });
 
     wireNpGestures();
