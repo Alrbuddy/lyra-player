@@ -1,5 +1,5 @@
 /* Lyra service worker — cache-first, fully offline. Bump VERSION after any cached-file change. */
-const VERSION = "v10";
+const VERSION = "v11";
 const CACHE = "lyra-" + VERSION;
 
 const ASSETS = [
@@ -21,9 +21,19 @@ const ASSETS = [
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting())
-  );
+  e.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    // Fetch every asset past the HTTP cache. plain addAll() reuses whatever the
+    // browser already had, so a brand new VERSION could still be filled with
+    // the previous build's app.js — a phone would then run mixed versions.
+    await Promise.all(ASSETS.map(async (url) => {
+      try {
+        const res = await fetch(new Request(url, { cache: "reload" }));
+        if (res && res.ok) await cache.put(url, res);
+      } catch (err) { /* keep whatever we have rather than failing install */ }
+    }));
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener("activate", (e) => {

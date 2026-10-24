@@ -6,7 +6,7 @@
   "scripts": {
     "test": "npm run test:unit && npm run test:page",
     "test:unit": "node --test tests/unit/*.test.js",
-    "test:page": "node tests/page/lyrics-lab.test.js && node tests/page/library-artist.test.js && node tests/page/playback-shell.test.js"
+    "test:page": "node tests/page/lyrics-lab.test.js && node tests/page/library-artist.test.js && node tests/page/playback-shell.test.js && node tests/page/sw-update.test.js"
   },
   "devDependencies": {
     "playwright": "^1.64.1"
