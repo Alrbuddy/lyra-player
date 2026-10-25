@@ -56,6 +56,23 @@
     return (W.Lyra && W.Lyra.app && W.Lyra.app.tracks) || [];
   }
 
+  /* Save only the fields that changed. The song's audio lives in its own
+     IndexedDB store now, so a lyric edit is a small metadata write and can
+     never trip Safari's Blob-clone failure. */
+  async function savePatch(track, fields) {
+    await db().saveMeta(track.id, fields);
+    Object.assign(track, fields);
+    return track;
+  }
+
+  function saveErrorText(e) {
+    if (e && e.code === "not-found") return "This song is no longer in your library.";
+    if (e && (e.name === "QuotaExceededError" || /quota|space/i.test(e.message || ""))) {
+      return "Couldn't save — this device is out of storage.";
+    }
+    return "Couldn't save on this device. The lyrics are still on screen.";
+  }
+
   async function refreshTracks() {
     if (W.Lyra && W.Lyra.app && W.Lyra.app.refreshData) await W.Lyra.app.refreshData();
   }
@@ -690,6 +707,8 @@
   let activeLine = -1;
   let rafId = 0;
   let expectedTop = 0;
+  let editing = -1;        // index of the line being edited inline
+  let pausedForEdit = false;
 
   async function loadSettings() {
     if (!db()) return;
@@ -811,35 +830,46 @@
       });
       if (!out.words.length) throw new LlabError("empty", "Groq returned no words.");
       const fresh = findTrack(t.id) || t;
-      fresh.lyricsWords = out.words;
-      fresh.lyricsTranscript = out.text;
-      fresh.transcriptLang = out.language;
-      fresh.transcribedAt = Date.now();
-      await db().putTrack(fresh);
       const live = npTrack();
-      if (live && live.id === fresh.id) {
-        live.lyricsWords = fresh.lyricsWords;
-        live.lyricsTranscript = fresh.lyricsTranscript;
-        live.transcriptLang = fresh.transcriptLang;
-        live.transcribedAt = fresh.transcribedAt;
+      const base = {
+        lyricsWords: out.words,
+        lyricsTranscript: out.text,
+        transcriptLang: out.language,
+        transcribedAt: Date.now(),
+      };
+      let saved = false;
+      try {
+        await savePatch(fresh, base);
+        saved = true;
+      } catch (e) {
+        // Keep the transcript usable for this session even if storing it fails.
+        Object.assign(fresh, base);
       }
+      if (live && live.id === fresh.id) Object.assign(live, base);
       // With no lyrics of your own, the transcript becomes the lyrics right
       // away, already synced — no second tap.
       const hasOwnLyrics = !!(fresh.lyrics && fresh.lyrics.trim());
       if (!hasOwnLyrics) {
         const lines = linesFromWords(out.words);
-        fresh.lyrics = lines.map((l) => l.text).join("\n");
-        fresh.lyricsSynced = { lines, matchRate: 1, source: "transcript", createdAt: Date.now() };
-        await db().putTrack(fresh);
-        if (live && live.id === fresh.id) {
-          live.lyrics = fresh.lyrics;
-          live.lyricsSynced = fresh.lyricsSynced;
+        const next = {
+          lyrics: lines.map((l) => l.text).join("\n"),
+          lyricsSynced: { lines, matchRate: 1, source: "transcript", createdAt: Date.now() },
+        };
+        try {
+          await savePatch(fresh, next);
+        } catch (e) {
+          Object.assign(fresh, next);
         }
+        if (live && live.id === fresh.id) Object.assign(live, next);
       }
       await refreshTracks();
       const low = out.words.filter((w) => w.probability != null && w.probability < 0.5).length;
       const lowNote = low ? " · " + Math.round((low / out.words.length) * 100) + "% low-confidence" : "";
-      setStatus(out.words.length + " words saved" + (hasOwnLyrics ? lowNote : " · lyrics synced" + lowNote), "ok");
+      if (!saved) {
+        setStatus("Transcribed, but couldn't save it on this device" + lowNote, "bad");
+      } else {
+        setStatus(out.words.length + " words saved" + (hasOwnLyrics ? lowNote : " · lyrics synced" + lowNote), "ok");
+      }
       toast(hasOwnLyrics ? "Transcript saved — tap Sync my lyrics" : "Lyrics synced from the transcript");
       mountNp();
       if (!hasOwnLyrics) refreshLyricsView();
@@ -861,13 +891,19 @@
     const res = alignLyrics(t.lyrics, t.lyricsWords);
     if (!res.lines.length) { toast("Nothing to align"); return; }
     const fresh = findTrack(t.id) || t;
-    fresh.lyricsSynced = {
+    const synced = {
       lines: res.lines,
       matchRate: res.matchRate,
       source: "transcript",
       createdAt: Date.now(),
     };
-    await db().putTrack(fresh);
+    try {
+      await savePatch(fresh, { lyricsSynced: synced });
+    } catch (e) {
+      Object.assign(fresh, { lyricsSynced: synced });
+      setStatus(saveErrorText(e), "bad");
+      return;
+    }
     const live = npTrack();
     if (live && live.id === fresh.id) live.lyricsSynced = fresh.lyricsSynced;
     await refreshTracks();
@@ -905,11 +941,19 @@
     const timed = parsed.lines.filter((l) => l.t != null);
     if (!timed.length) { toast("No timestamps found in that .lrc"); return; }
     const fresh = findTrack(t.id) || t;
-    fresh.lyrics = text.trim();
-    fresh.lyricsSynced = { lines: parsed.lines, matchRate: null, source: "lrc", createdAt: Date.now() };
-    await db().putTrack(fresh);
+    const next = {
+      lyrics: text.trim(),
+      lyricsSynced: { lines: parsed.lines, matchRate: null, source: "lrc", createdAt: Date.now() },
+    };
+    try {
+      await savePatch(fresh, next);
+    } catch (e) {
+      setStatus(saveErrorText(e), "bad");
+      toast(saveErrorText(e));
+      return;
+    }
     const live = npTrack();
-    if (live && live.id === fresh.id) { live.lyrics = fresh.lyrics; live.lyricsSynced = fresh.lyricsSynced; }
+    if (live && live.id === fresh.id) Object.assign(live, next);
     await refreshTracks();
     setStatus(timed.length + " timed lines imported", "ok");
     toast("Lyrics attached");
@@ -987,6 +1031,8 @@
 
   function refreshLyricsView() {
     if (!doc()) return;
+    // Never rebuild the lines while one of them is being edited inline.
+    if (editing >= 0) return;
     const t = viewTrack && findTrack(viewTrack.id) ? findTrack(viewTrack.id) : viewTrack;
     if (!t || !enabled || !hasTiming(t)) { teardownLyrics(); return; }
     const view = doc().getElementById("lyrics");
@@ -1016,7 +1062,7 @@
   }
 
   function renderLines(box) {
-    box.className = "lyrics-text llab-text";
+    box.className = "lyrics-text llab-text" + (mode === "word" ? " word-mode" : "");
     box.innerHTML = viewLines.map((l, i) => {
       const cls = "llab-line tap";
       if (mode === "word" && l.words && l.words.length) {
@@ -1086,9 +1132,12 @@
     if (!viewTrack) return;
     const t = findTrack(viewTrack.id) || viewTrack;
     const next = Math.round(((Number(t.lrcOffset) || 0) + delta) * 10) / 10;
-    t.lrcOffset = next;
     if (viewTrack.id === t.id) viewTrack = t;
-    await db().putTrack(t);
+    try {
+      await savePatch(t, { lrcOffset: next });
+    } catch (e) {
+      t.lrcOffset = next; // still applies for this session
+    }
     const live = npTrack();
     if (live && live.id === t.id) live.lrcOffset = next;
     viewOffset = next;
@@ -1116,6 +1165,8 @@
     viewTrack = null;
     activeLine = -1;
     follow = false;
+    editing = -1;
+    pausedForEdit = false;
   }
 
   // ------------------------------------------------------------ highlight
@@ -1299,12 +1350,176 @@
     });
   }
 
+  // ------------------------------------------------- inline line editing
+  function wordsBetween(text, start, end) {
+    const toks = String(text || "").split(/\s+/).filter(Boolean);
+    if (!toks.length) return null;
+    const from = Number(start) || 0;
+    const span = Math.max(0.3, (Number(end) || from + 2) - from);
+    return toks.map((w, k) => ({
+      text: w,
+      t: Math.round((from + span * (k / toks.length)) * 100) / 100,
+      e: Math.round((from + span * ((k + 1) / toks.length)) * 100) / 100,
+      p: null,
+    }));
+  }
+
+  function beginLineEdit(i) {
+    const box = doc() && doc().getElementById("lyrics-text");
+    if (!box || editing >= 0 || !viewLines[i]) return false;
+    const line = box.querySelector('.llab-line[data-i="' + i + '"]');
+    if (!line) return false;
+    editing = i;
+    const p = player();
+    if (p && p.audio && !p.audio.paused) {
+      pausedForEdit = true;
+      p.audio.pause();
+    }
+    line.classList.add("editing");
+    line.innerHTML =
+      '<div class="llab-edit">' +
+        '<textarea class="llab-edit-input" rows="2" spellcheck="false" ' +
+          'aria-label="Edit this lyric line">' + esc(viewLines[i].text) + '</textarea>' +
+        '<div class="llab-edit-actions">' +
+          '<button type="button" class="llab-chip" data-edit="cancel">Discard</button>' +
+          '<button type="button" class="llab-btn-save" data-edit="save">Save</button>' +
+        '</div>' +
+      '</div>';
+    const ta = line.querySelector("textarea");
+    if (ta) {
+      ta.focus();
+      try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {}
+      ta.onkeydown = (e) => { if (e.key === "Escape") { e.preventDefault(); cancelLineEdit(); } };
+    }
+    line.querySelector('[data-edit="cancel"]').onclick = (e) => { e.stopPropagation(); cancelLineEdit(); };
+    line.querySelector('[data-edit="save"]').onclick = (e) => { e.stopPropagation(); saveLineEdit(i); };
+    toast("Paused — fix the line, then Save");
+    return true;
+  }
+
+  function finishEditUi() {
+    editing = -1;
+    const box = doc() && doc().getElementById("lyrics-text");
+    if (box) renderLines(box);
+    activeLine = -1;
+  }
+
+  function resumeAfterEdit() {
+    if (!pausedForEdit) return;
+    pausedForEdit = false;
+    const p = player();
+    if (p && p.audio && p.audio.paused) p.toggle();
+  }
+
+  function cancelLineEdit() {
+    if (editing < 0) return;
+    finishEditUi();
+    resumeAfterEdit();
+  }
+
+  async function saveLineEdit(i) {
+    const box = doc() && doc().getElementById("lyrics-text");
+    const line = box && box.querySelector('.llab-line[data-i="' + i + '"]');
+    const ta = line && line.querySelector("textarea");
+    const text = ta ? ta.value.replace(/\s+/g, " ").trim() : "";
+    const t = viewTrack && (findTrack(viewTrack.id) || viewTrack);
+    if (!t || !t.lyricsSynced || !t.lyricsSynced.lines[i]) { finishEditUi(); resumeAfterEdit(); return; }
+
+    const lines = t.lyricsSynced.lines.map((l) => Object.assign({}, l));
+    const cur = lines[i];
+    const start = Number(cur.t) || 0;
+    const end = Math.max(start + 0.3, Number(cur.end) || start + 2);
+    lines[i] = Object.assign({}, cur, { text, words: text ? wordsBetween(text, start, end) : null });
+    const lyrics = lines.map((l) => String(l.text == null ? "" : l.text)).join("\n");
+    const synced = Object.assign({}, t.lyricsSynced, { lines, editedAt: Date.now() });
+
+    editing = -1;
+    try {
+      await savePatch(t, { lyrics, lyricsSynced: synced });
+      toast("Line saved");
+    } catch (e) {
+      // Keep what was typed for this session rather than silently dropping it.
+      t.lyrics = lyrics;
+      t.lyricsSynced = synced;
+      toast(saveErrorText(e));
+    }
+    const live = npTrack();
+    if (live && live.id === t.id) { live.lyrics = lyrics; live.lyricsSynced = t.lyricsSynced; }
+    viewTrack = t;
+    viewLines = withOffset(t.lyricsSynced.lines, offsetFor(t));
+    await refreshTracks();
+    const box2 = doc() && doc().getElementById("lyrics-text");
+    if (box2) renderLines(box2);
+    activeLine = -1;
+    resumeAfterEdit();
+  }
+
   function wireLineTaps() {
     const box = doc() && doc().getElementById("lyrics-text");
     if (!box || box.dataset.llabTaps === "1") return;
     box.dataset.llabTaps = "1";
+
+    // Tap a line to seek. Hold it to edit it in place — the song pauses so you
+    // can hear the line again without leaving this screen.
+    let holdTimer = 0;
+    let holdLine = null;
+    let startX = 0;
+    let startY = 0;
+    let suppressTap = false;
+
+    const clearHold = () => {
+      if (holdTimer) clearTimeout(holdTimer);
+      holdTimer = 0;
+      holdLine = null;
+    };
+    const lineFrom = (target) => {
+      if (target.closest(".llab-edit")) return null;
+      const line = target.closest(".llab-line");
+      return line && box.contains(line) ? line : null;
+    };
+
+    box.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      const line = lineFrom(e.target);
+      if (!line) return;
+      const t = e.touches[0];
+      startX = t.clientX;
+      startY = t.clientY;
+      holdLine = line;
+      suppressTap = false;
+      holdTimer = setTimeout(() => {
+        holdTimer = 0;
+        if (!holdLine) return;
+        suppressTap = beginLineEdit(Number(holdLine.dataset.i));
+      }, 480);
+    }, { passive: true });
+    box.addEventListener("touchmove", (e) => {
+      if (!holdTimer || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      if (Math.abs(t.clientX - startX) > 9 || Math.abs(t.clientY - startY) > 9) clearHold();
+    }, { passive: true });
+    box.addEventListener("touchend", clearHold, { passive: true });
+    box.addEventListener("touchcancel", clearHold, { passive: true });
+
+    // Mouse and pen (desktop, and the headless tests).
+    box.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "touch") return;
+      const line = lineFrom(e.target);
+      if (!line) return;
+      holdLine = line;
+      suppressTap = false;
+      holdTimer = setTimeout(() => {
+        holdTimer = 0;
+        if (holdLine) suppressTap = beginLineEdit(Number(holdLine.dataset.i));
+      }, 480);
+    });
+    ["pointerup", "pointercancel", "pointerleave"].forEach((evt) =>
+      box.addEventListener(evt, (e) => { if (e.pointerType !== "touch") clearHold(); }));
+
     box.addEventListener("click", (e) => {
-      const line = e.target.closest(".llab-line");
+      if (suppressTap) { suppressTap = false; return; }
+      if (editing >= 0) return;
+      const line = lineFrom(e.target);
       if (!line) return;
       const t = line.dataset.t === "" ? null : Number(line.dataset.t);
       if (t == null) return;
@@ -1439,9 +1654,12 @@
     testKey,
     importLrcFile,
     lrcTextFor,
+    beginLineEdit,
+    cancelLineEdit,
+    isEditing() { return editing >= 0; },
     LrcError: LlabError,
     _state() {
-      return { enabled, mode, language, follow, activeLine, offset: viewOffset, lines: viewLines, rendered, hasKey: !!apiKey };
+      return { enabled, mode, language, follow, activeLine, offset: viewOffset, lines: viewLines, rendered, editing, hasKey: !!apiKey };
     },
   };
 

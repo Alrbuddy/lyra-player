@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.7";
+  const APP_VERSION = "1.4.8";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -652,6 +652,10 @@
       </button>
       <div class="set-row"><div><div class="l">Version</div><div class="s" id="set-version">Lyra ${APP_VERSION}</div></div></div>
       <div class="set-row"><div><div class="l">Display</div><div class="s" id="set-display">—</div></div></div>
+      <div class="set-row">
+        <div><div class="l">iPhone layout preview</div><div class="s">Pretends to be a Home Screen app (status bar and home indicator insets) so the floating bars can be checked in a browser. Changes nothing on your phone.</div></div>
+        <input type="checkbox" class="ios" id="set-sim">
+      </div>
     </div>`;
   }
 
@@ -709,7 +713,7 @@
     const nav = $("#nav");
     const appH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-h")) || 0;
     const parts = [
-      displayMode(),
+      simIOS() ? "sim-ios" : displayMode(),
       "app " + Math.round(appH),
       "win " + window.innerHeight,
       vv ? "vv " + Math.round(vv.height) : "vv none",
@@ -1320,6 +1324,12 @@
     if (!$("#np-like").innerHTML) $("#np-like").innerHTML = HEART_SVG;
     setHeartState($("#np-like"), t);
     $("#np-play").innerHTML = st.playing ? PAUSE_SVG : PLAY_SVG;
+    const lp = $("#lyrics-play");
+    if (lp) {
+      lp.innerHTML = st.playing ? PAUSE_SVG : PLAY_SVG;
+      lp.classList.toggle("fill", true);
+      lp.setAttribute("aria-label", st.playing ? "Pause" : "Play");
+    }
     $("#np-shuffle").innerHTML = SHUFFLE_SVG;
     $("#np-shuffle").classList.toggle("active", st.shuffle);
     $("#np-repeat").innerHTML = st.repeat === "one" ? REPEAT_ONE_SVG : REPEAT_SVG;
@@ -2019,6 +2029,11 @@
       fillVersionInfo();
       fillDisplayInfo();
       fillBackupInfo();
+      const simBox = $("#set-sim");
+      if (simBox) {
+        simBox.checked = simIOS();
+        simBox.onchange = () => applySimIOS(simBox.checked);
+      }
       $("#set-update").onclick = checkForUpdates;
       window.Lyra.lyricsSync?.mountSettings(v);
       db.getSetting("lyricsAutoScroll").then((v2) => { $("#set-autoscroll").checked = !!v2; });
@@ -2143,6 +2158,7 @@
     $("#np-trim").onclick = openTrimSheet;
 
     $("#lyrics-close").onclick = closeLyrics;
+    $("#lyrics-play").onclick = () => player.toggle();
     $("#lyrics-edit").onclick = () => {
       const t = tracks.find((x) => x.id === lyricsTrackId) || player.state().track;
       if (!t) return;
@@ -2219,45 +2235,81 @@
   // outside the part you can actually see. Lift the bars by that difference and
   // size the scrolling shell to the visible height, so what you see is what you
   // can tap.
-  // Is a bar really tappable where we just painted it? elementFromPoint only
-  // answers inside the box iOS actually hit-tests in, so this catches the case
-  // where we sized the shell taller than the page can really be.
-  function barIsReachable(nav) {
-    if (!nav) return false;
-    const r = nav.getBoundingClientRect();
-    if (r.height <= 0) return false;
-    const el = document.elementFromPoint(
-      Math.round(r.left + r.width / 2),
-      Math.round(r.top + r.height / 2)
-    );
-    return !!(el && (nav === el || nav.contains(el)));
+  // ---------- iPhone layout simulation ----------
+  // A normal desktop browser has no safe areas, so the floating bars can be
+  // checked but not their clearance from the status bar and home indicator.
+  // `?sim=ios` (or the Settings switch) adds those insets inside the page.
+  const SIM_KEY = "simIOS";
+
+  function simIOS() {
+    return document.documentElement.classList.contains("sim-ios");
+  }
+
+  function applySimIOS(on, persist) {
+    document.documentElement.classList.toggle("sim-ios", !!on);
+    if (persist !== false) {
+      try { localStorage.setItem(SIM_KEY, on ? "1" : "0"); } catch (e) { /* private mode */ }
+    }
+    syncViewport();
+    const box = $("#set-sim");
+    if (box) box.checked = !!on;
+    fillDisplayInfo();
+  }
+
+  function bootSimIOS() {
+    let want = false;
+    try { want = localStorage.getItem(SIM_KEY) === "1"; } catch (e) { /* ignore */ }
+    const q = (location.search.match(/[?&]sim=([a-z]+)/i) || [])[1];
+    if (q === "ios") want = true;
+    else if (q === "off") want = false;
+    if (want) applySimIOS(true, q ? true : false);
+    else if (q === "off") applySimIOS(false);
   }
 
   function syncViewport() {
     const root = document.documentElement;
-    const vv = window.visualViewport;
-    const nav = document.getElementById("nav");
     root.style.setProperty("--vv-lift", "0px");
 
+    // In the simulator the browser window *is* the phone screen.
+    if (simIOS()) {
+      const h = Math.round(window.innerHeight || document.documentElement.clientHeight || 0);
+      if (h > 0) root.style.setProperty("--app-h", h + "px");
+      return;
+    }
+
+    const vv = window.visualViewport;
     // iOS sometimes reports the viewport about one status bar (47px) shorter
     // than the box it actually paints and hit-tests in: the bars then float in
-    // the air and taps land above what you touched. Take the tallest plausible
-    // reading, and keep it only if the tab bar is really tappable there.
+    // the air and taps land above what you touched.
     const measured = Math.round(Math.max(
       (vv && vv.height) || 0, window.innerHeight || 0,
       document.documentElement.clientHeight || 0
     ));
     const screenH = Math.round((window.screen && window.screen.height) || 0);
-    const portrait = !(window.matchMedia && window.matchMedia("(orientation: landscape)").matches);
-    const candidate = (screenH > measured && screenH - measured <= 60 && portrait) ? screenH : measured;
+    const mode = displayMode();
+    const portrait = (window.innerHeight || 0) >= (window.innerWidth || 0);
+    // From the Home Screen the page fills the display, so the display height is
+    // the truth — even on a cold start, where innerHeight can come back one
+    // status bar short and only correct itself on the first interaction. That
+    // is why the tab bar used to sit too high until the app was tapped.
+    const homeScreen = mode === "standalone" || mode === "fullscreen";
+    const fromScreen = homeScreen && portrait && screenH > measured && screenH - measured < 140;
+    const candidate = fromScreen ? screenH : measured;
 
-    const apply = (h) => { if (h > 0) root.style.setProperty("--app-h", h + "px"); };
+    const apply = (h) => {
+      if (!(h > 0)) return;
+      const next = h + "px";
+      if (root.style.getPropertyValue("--app-h") !== next) root.style.setProperty("--app-h", next);
+    };
 
+    // In a Home Screen app the screen height is the truth even when the boxes
+    // here say otherwise, so there is no reachability fallback: measuring the
+    // *reported* viewport is exactly what was wrong on a cold start.
     apply(candidate);
-    if (candidate !== measured && !barIsReachable(nav)) apply(measured);
   }
 
   function watchViewport() {
+    bootSimIOS();
     syncViewport();
     window.addEventListener("resize", syncViewport, { passive: true });
     window.addEventListener("orientationchange", () => {
@@ -2266,8 +2318,14 @@
     });
     // Deliberately not listening to visualViewport resize/scroll: the keyboard
     // also moves that viewport, and the bars should stay put while typing.
-    // A cold start on iOS can report the wrong height for a moment.
-    [0, 50, 300, 900, 1500, 2500].forEach((ms) => setTimeout(syncViewport, ms));
+    // A cold start on iOS can report the wrong height for a moment; re-measure
+    // on the next frames and over the first few seconds.
+    if (window.requestAnimationFrame) {
+      [0, 1, 2].forEach((n) => window.requestAnimationFrame(() => {
+        if (n) syncViewport();
+      }));
+    }
+    [0, 16, 60, 160, 400, 900, 1500, 2500, 4000].forEach((ms) => setTimeout(syncViewport, ms));
     window.addEventListener("pageshow", syncViewport);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) syncViewport(); });
     // First touch also makes iOS settle its viewport; re-measure then.
@@ -2316,7 +2374,7 @@
       viewLibrary, viewHome, viewSearch, dominantColor, searchResults, detailData,
       artistsOf, albumsOf, albumName, artistOf, isRealAlbum, editInfoSheet, trackMenu,
       versionLabel, newestVersion, installedBuild, latestBuild, syncViewport,
-      displayMode, fillDisplayInfo,
+      displayMode, fillDisplayInfo, applySimIOS, simIOS,
       get appVersion() { return APP_VERSION; },
     },
   };

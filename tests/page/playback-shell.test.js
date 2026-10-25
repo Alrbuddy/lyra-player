@@ -193,7 +193,7 @@ async function dragTouch(page, fromY, toY) {
       const orig = document.startViewTransition;
       document.startViewTransition = function (...a) { window.__vt++; return orig.apply(document, a); };
     });
-    for (const t of ["search", "library", "import", "home"]) {
+    for (const t of ["search", "library", "import", "settings", "home"]) {
       await page.click(`.nav-btn[data-tab="${t}"]`);
       await page.waitForTimeout(140);
       const view = await page.evaluate(() => document.querySelector("#view").innerHTML.length);
@@ -323,6 +323,68 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(a.paused, false, "the element is playing");
     assert.equal(b.paused, false, "and it is still playing a moment later");
     assert.ok(b.t > a.t, "the clock is advancing (" + a.t + " → " + b.t + ")");
+  });
+
+  await check("tapping A, B, A, B, A always leaves the last tap playing", async () => {
+    await seed(page, null);
+    const ids = await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      const second = await Lyra.db.addTrack({
+        title: "Second Song", artist: base.artist, album: "", duration: 100,
+        audio: base.audio, addedAt: Date.now() + 5, plays: 0, liked: false, lyrics: "",
+      });
+      await Lyra.app.refreshData();
+      return [base.id, second];
+    });
+    for (const i of [0, 1, 0, 1, 0]) {
+      await page.evaluate(({ ids, i }) => Lyra.player.playQueue(ids, i), { ids, i });
+      await page.waitForTimeout(90);
+    }
+    const ok = await page.evaluate((ids) => new Promise((resolve) => {
+      const t0 = performance.now();
+      const tick = () => {
+        const st = Lyra.player.state();
+        const a = Lyra.player.audio;
+        if (st.track && st.track.id === ids[0] && !a.paused && a.currentTime > 0) return resolve(true);
+        if (performance.now() - t0 > 8000) {
+          return resolve({ ok: false, id: st.track && st.track.id, paused: a.paused, err: a.error ? a.error.code : 0, ready: a.readyState });
+        }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }), ids);
+    assert.equal(ok, true, "the song that was tapped last recovered: " + JSON.stringify(ok));
+    const still = await page.evaluate(() => ({ paused: Lyra.player.audio.paused, t: Lyra.player.audio.currentTime }));
+    assert.equal(still.paused, false, "and it keeps playing");
+    assert.ok(still.t > 0, "the clock is moving");
+  });
+
+  await check("a song whose element went silent starts again from one tap", async () => {
+    // What iOS leaves behind after a failed swap: an element with no source and
+    // no metadata, while the app still thinks a song is loaded.
+    const wedged = await page.evaluate(async () => {
+      const a = Lyra.player.audio;
+      a.pause();
+      a.removeAttribute("src");
+      a.load();
+      await new Promise((r) => setTimeout(r, 200));
+      return { ready: a.readyState, src: a.currentSrc, track: Lyra.player.state().track.id };
+    });
+    assert.equal(wedged.ready, 0, "no loaded metadata is left behind, like a wedged element");
+
+    await page.evaluate(() => Lyra.player.toggle());
+    const recovered = await page.evaluate((id) => new Promise((resolve) => {
+      const t0 = performance.now();
+      const tick = () => {
+        const a = Lyra.player.audio;
+        if (!a.paused && a.currentTime > 0 && a.currentSrc) return resolve(true);
+        if (performance.now() - t0 > 9000) return resolve({ ok: false, paused: a.paused, src: a.currentSrc, err: a.error && a.error.code });
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }), wedged.track);
+    assert.equal(recovered, true, "the tap rebuilt the source instead of staying silent: " + JSON.stringify(recovered));
+    assert.equal(await page.evaluate(() => Lyra.player.state().track.id), wedged.track, "same song, now playing");
   });
 
   await check("a finished song moves on to the next one", async () => {
@@ -480,6 +542,50 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(read.aria, "Play");
   });
 
+  await check("playing from an artist page starts the song you tapped, not the old one", async () => {
+    await seed(page, null);
+    const ids = await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      base.artist = "Alpha Artist";
+      base.artistManual = true;
+      await Lyra.db.putTrack(base);
+      const other = await Lyra.db.addTrack({
+        title: "Zed Song", artist: "Zed", album: "", duration: 100,
+        audio: base.audio, addedAt: Date.now() + 5, plays: 0, liked: false, lyrics: "",
+      });
+      await Lyra.app.refreshData();
+      return { alpha: base.id, zed: other };
+    });
+    // Play the first artist's song first, then start the other artist's song
+    // from the Artists list.
+    await page.evaluate((id) => Lyra.player.playQueue([id], 0), ids.alpha);
+    await page.waitForTimeout(450);
+    await page.click('.nav-btn[data-tab="library"]');
+    await page.waitForTimeout(200);
+    await page.click('#view [data-libfilter="artists"]');
+    await page.waitForTimeout(200);
+    await page.click('.sheet-item[data-detail-val="Zed"]');
+    await page.waitForTimeout(250);
+    await page.click('#detail-rows [data-play-track]');
+    await page.waitForTimeout(700);
+    const st = await page.evaluate(() => ({
+      id: Lyra.player.state().track.id,
+      title: Lyra.player.state().track.title,
+      playing: Lyra.player.state().playing,
+      paused: Lyra.player.audio.paused,
+      t: Lyra.player.audio.currentTime,
+    }));
+    assert.equal(st.id, ids.zed, "the tapped song is loaded (got " + st.title + ")");
+    assert.equal(st.paused, false, "and it is playing");
+    assert.equal(st.playing, true);
+    assert.ok(st.t >= 0, "the clock is valid");
+    // back to the song list for the next check
+    await page.click('.nav-btn[data-tab="library"]');
+    await page.waitForTimeout(150);
+    await page.click('#view [data-libfilter="songs"]');
+    await page.waitForTimeout(150);
+  });
+
   await check("tapping a song row starts it right away", async () => {
     await page.evaluate(() => Lyra.app.go("library"));
     await page.waitForTimeout(200);
@@ -610,6 +716,61 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(out.reachable, true, "the tab bar stays tappable");
     assert.ok(out.navBottom <= out.viewportH, "the bar is inside the real viewport: " + out.navBottom + " vs " + out.viewportH);
     assert.equal(out.appH, out.viewportH + "px", "the shell falls back to the measured height");
+  });
+
+  await check("from the Home Screen the shell uses the screen height, not a short reading", async () => {
+    const out = await page.evaluate(() => {
+      const realScreen = window.screen.height;
+      Object.defineProperty(window.screen, "height", { value: 900, configurable: true });
+      Object.defineProperty(navigator, "standalone", { value: true, configurable: true });
+      const winH = window.innerHeight;
+      Lyra.app._test.syncViewport();
+      const appH = getComputedStyle(document.documentElement).getPropertyValue("--app-h").trim();
+      const shellH = getComputedStyle(document.getElementById("shell")).height;
+      const navBottom = Math.round(document.getElementById("nav").getBoundingClientRect().bottom);
+      Object.defineProperty(window.screen, "height", { value: realScreen, configurable: true });
+      Object.defineProperty(navigator, "standalone", { value: false, configurable: true });
+      Lyra.app._test.syncViewport();
+      return { winH, appH, shellH, navBottom, mode: Lyra.app._test.displayMode() };
+    });
+    assert.equal(out.appH, "900px", "a Home Screen app fills the display (was " + out.appH + ")");
+    assert.equal(out.shellH, "900px");
+    assert.ok(Math.abs(out.navBottom - (900 - 4)) <= 1,
+      "the tab bar sits near the bottom edge, not a status bar above it (bottom at " + out.navBottom + ")");
+  });
+
+  await check("the iPhone layout preview adds status bar and home indicator insets", async () => {
+    const on = await page.evaluate(() => {
+      Lyra.app._test.applySimIOS(true);
+      const root = document.documentElement;
+      const nav = document.getElementById("nav").getBoundingClientRect();
+      const view = getComputedStyle(document.getElementById("view"));
+      return {
+        on: root.classList.contains("sim-ios"),
+        appH: getComputedStyle(root).getPropertyValue("--app-h").trim(),
+        winH: window.innerHeight,
+        navBottom: Math.round(window.innerHeight - nav.bottom),
+        top: Math.round(parseFloat(view.paddingTop)),
+        saved: localStorage.getItem("simIOS"),
+      };
+    });
+    assert.equal(on.on, true);
+    assert.equal(on.appH, on.winH + "px", "the browser window is treated as the phone screen");
+    assert.equal(on.navBottom, 8, "room for the home indicator (got " + on.navBottom + ")");
+    assert.equal(on.top, 59, "room for the status bar (got " + on.top + ")");
+    assert.equal(on.saved, "1", "the choice is remembered");
+
+    const off = await page.evaluate(() => {
+      Lyra.app._test.applySimIOS(false);
+      return {
+        on: document.documentElement.classList.contains("sim-ios"),
+        top: Math.round(parseFloat(getComputedStyle(document.getElementById("view")).paddingTop)),
+        saved: localStorage.getItem("simIOS"),
+      };
+    });
+    assert.equal(off.on, false);
+    assert.ok(off.top < 30, "back to the real padding (" + off.top + ")");
+    assert.equal(off.saved, "0");
   });
 
   await check("a viewport mismatch lifts both bars by exactly that much", async () => {
@@ -842,6 +1003,117 @@ async function dragTouch(page, fromY, toY) {
     });
     assert.equal(out.id, ids.b, "a left swipe moved to the next song");
     assert.equal(out.npHidden, true, "and it did not open Now Playing");
+  });
+
+  console.log("\nStorage");
+  await check("the audio is stored apart from the track, so metadata saves never rewrite it", async () => {
+    await seed(page, null);
+    const info = await page.evaluate(async () => {
+      const id = Lyra.app.tracks[0].id;
+      const raw = await new Promise((resolve, reject) => {
+        const req = indexedDB.open("lyra", 2);
+        req.onsuccess = () => {
+          const db = req.result;
+          const g = db.transaction("tracks", "readonly").objectStore("tracks").get(id);
+          g.onsuccess = () => resolve(g.result);
+          g.onerror = () => reject(g.error);
+        };
+        req.onerror = () => reject(req.error);
+      });
+      const before = await Lyra.db.getTrack(id);
+      await Lyra.db.saveMeta(id, { lyrics: "saved without touching the audio", plays: 7 });
+      const after = await Lyra.db.getTrack(id);
+      return {
+        inline: Object.prototype.hasOwnProperty.call(raw, "audio"),
+        inlineBytes: raw.audio ? raw.audio.size : 0,
+        beforeBytes: before.audio ? before.audio.size : 0,
+        afterBytes: after.audio ? after.audio.size : 0,
+        afterType: after.audio ? after.audio.type : "",
+        lyrics: after.lyrics,
+        plays: after.plays,
+      };
+    });
+    assert.equal(info.inline, false, "the track record carries no Blob anymore");
+    assert.equal(info.inlineBytes, 0);
+    assert.ok(info.beforeBytes > 0, "the audio is still there, in its own store");
+    assert.equal(info.afterBytes, info.beforeBytes, "a lyric save leaves the audio untouched");
+    assert.equal(info.afterType, "audio/wav");
+    assert.equal(info.lyrics, "saved without touching the audio");
+    assert.equal(info.plays, 7);
+  });
+
+  await check("saving metadata for a deleted song reports it, instead of a storage error", async () => {
+    const out = await page.evaluate(async () => {
+      try {
+        await Lyra.db.saveMeta(987654, { lyrics: "gone" });
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, code: e.code || "", message: e.message };
+      }
+    });
+    assert.equal(out.ok, false);
+    assert.equal(out.code, "not-found");
+    assert.match(out.message, /no longer in your library/);
+  });
+
+  await check("deleting a song removes its audio too", async () => {
+    const out = await page.evaluate(async () => {
+      const id = Lyra.app.tracks[0].id;
+      await Lyra.db.deleteTrack(id);
+      const rows = await new Promise((resolve, reject) => {
+        const req = indexedDB.open("lyra", 2);
+        req.onsuccess = () => {
+          const db = req.result;
+          const g = db.transaction("audio", "readonly").objectStore("audio").get(id);
+          g.onsuccess = () => resolve(g.result || null);
+          g.onerror = () => reject(g.error);
+        };
+        req.onerror = () => reject(req.error);
+      });
+      const track = await Lyra.db.getTrack(id);
+      await Lyra.app.refreshData();
+      return { audioRow: rows, track };
+    });
+    assert.equal(out.audioRow, null, "the stored audio goes with the song");
+    assert.equal(out.track, undefined);
+  });
+
+  console.log("\nFive tabs");
+  await check("five tabs fit, with Settings last, and the pill lines up with each", async () => {
+    await page.evaluate(() => Lyra.app.go("library"));
+    await page.waitForTimeout(200);
+    const info = await page.evaluate(() => {
+      const nav = document.getElementById("nav");
+      const pill = document.getElementById("tab-pill");
+      const tabs = [...nav.querySelectorAll(".nav-btn")];
+      const navW = nav.getBoundingClientRect().width;
+      return {
+        count: tabs.length,
+        labels: tabs.map((b) => b.querySelector("span").textContent),
+        overflow: tabs.some((b) => b.scrollWidth > b.clientWidth + 1),
+        pillW: Math.round(pill.getBoundingClientRect().width),
+        expected: Math.round((navW - 10) / 5),
+        lastTransform: tabs.length && pill.style.transform,
+      };
+    });
+    assert.equal(info.count, 5, "five tabs");
+    assert.deepEqual(info.labels, ["Home", "Search", "Library", "Import", "Settings"]);
+    assert.equal(info.labels[4], "Settings", "Settings is to the right of Import");
+    assert.equal(info.overflow, false, "no label is clipped");
+    assert.ok(Math.abs(info.pillW - info.expected) <= 1, "pill is one fifth of the bar (" + info.pillW + " vs " + info.expected + ")");
+
+    await page.click('.nav-btn[data-tab="settings"]');
+    await page.waitForTimeout(300);
+    const view = await page.evaluate(() => ({
+      version: !!document.getElementById("set-version"),
+      active: document.querySelector('.nav-btn[data-tab="settings"]').classList.contains("on"),
+      transform: document.getElementById("tab-pill").style.transform,
+    }));
+    assert.equal(view.version, true, "the Settings tab opens Settings");
+    assert.equal(view.active, true);
+    assert.match(view.transform, /translateX\(400%\)/, "the pill sits on the fifth tab (" + view.transform + ")");
+    await page.click('.nav-btn[data-tab="home"]');
+    await page.waitForTimeout(200);
   });
 
   console.log("\nGroq upload body");

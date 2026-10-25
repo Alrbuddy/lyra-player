@@ -366,6 +366,27 @@ async function closeOverlays(page) {
     assert.notEqual(later.curText, "Four");
   });
 
+  await check("word mode dims the line so each word can light up in turn", async () => {
+    await seekTo(page, 2.2);
+    const colours = await page.evaluate(() => {
+      const box = document.getElementById("lyrics-text");
+      const line = document.querySelector('.llab-line[data-i="1"]');
+      const sung = line.querySelector(".llab-word.on");
+      const waiting = line.querySelector(".llab-word:not(.on):not(.cur)");
+      return {
+        cls: box.className,
+        line: getComputedStyle(line).color,
+        sung: sung ? getComputedStyle(sung).color : "",
+        waiting: waiting ? getComputedStyle(waiting).color : "",
+      };
+    });
+    assert.match(colours.cls, /word-mode/, "the lyrics box knows it is in word mode");
+    assert.match(colours.line, /rgba\(255, 255, 255, 0\.3\d\)/, "the active line itself stays dim");
+    assert.equal(colours.sung, "rgb(255, 255, 255)", "a sung word is white");
+    assert.match(colours.waiting, /rgba\(255, 255, 255, 0\.3\d\)/, "an unsung word is not");
+    assert.notEqual(colours.sung, colours.waiting, "word mode must look different from line mode");
+  });
+
   await check("follow keeps the active line about 40% from the top", async () => {
     await page.click("#llab-auto-scroll");
     await page.waitForTimeout(200);
@@ -414,6 +435,92 @@ async function closeOverlays(page) {
     await pause(page, 250);
     const t = await page.evaluate(() => Lyra.player.audio.currentTime);
     assert.ok(t > 2.8 && t < 3.6, "seeked to " + t.toFixed(2));
+  });
+
+  await check("holding a line pauses and edits it in place, and Save keeps the timing", async () => {
+    await seekTo(page, 1.7);
+    await page.locator('.llab-line[data-i="1"]').scrollIntoViewIfNeeded();
+    await pause(page, 200);
+    const box = await page.locator('.llab-line[data-i="1"]').boundingBox();
+    const at = { x: Math.round(box.x + 24), y: Math.round(box.y + box.height / 2) };
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await pause(page, 680);
+    const during = await page.evaluate((at) => ({
+      hit: (document.elementFromPoint(at.x, at.y) || {}).className,
+      editor: !!document.querySelector(".llab-edit-input"),
+      value: (document.querySelector(".llab-edit-input") || {}).value,
+      editing: Lyra.lyricsSync._state().editing,
+      paused: Lyra.player.audio.paused,
+      lines: document.querySelectorAll(".llab-line").length,
+      heading: document.getElementById("lyrics-heading").textContent,
+    }), at);
+    await page.mouse.up();
+    assert.equal(during.editor, true, "holding a line opens the inline editor (hit=" + during.hit + " editing=" + during.editing + ")");
+    assert.equal(during.value, "Four five six");
+    assert.equal(during.editing, 1);
+    assert.equal(during.paused, true, "the song pauses while you fix the line");
+    assert.equal(during.lines, 12, "the rest of the lyrics stay on screen");
+    assert.equal(during.heading, "Fixture Song", "still on the lyrics screen");
+
+    await page.fill(".llab-edit-input", "Four five six  (heard)");
+    await page.click('.llab-edit [data-edit="save"]');
+    await pause(page, 450);
+    const after = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.app.tracks[0].id);
+      const lines = t.lyricsSynced.lines;
+      return {
+        text: lines[1].text,
+        t: lines[1].t,
+        next: lines[2].t,
+        count: lines.length,
+        words: (lines[1].words || []).length,
+        firstWord: lines[1].words && lines[1].words[0].t,
+        dom: document.querySelector('.llab-line[data-i="1"]').textContent.trim(),
+        editor: !!document.querySelector(".llab-edit-input"),
+        lyricsLine: t.lyrics.split("\n")[1],
+      };
+    });
+    assert.equal(after.text, "Four five six (heard)");
+    assert.ok(Math.abs(after.t - 1.6) < 0.01, "the line keeps its original start time (" + after.t + ")");
+    assert.ok(Math.abs(after.next - 3) < 0.01, "the next line's time is untouched (" + after.next + ")");
+    assert.equal(after.count, 12, "no lines were added or lost");
+    assert.equal(after.words, 4, "word mode still has word timing");
+    assert.ok(Math.abs(after.firstWord - 1.6) < 0.01, "word timing starts at the line start");
+    assert.equal(after.dom, "Four five six (heard)", "the screen shows the fix");
+    assert.equal(after.editor, false);
+    assert.equal(after.lyricsLine, "Four five six (heard)", "the plain lyrics text follows");
+  });
+
+  await check("Discard leaves the line and the song as they were, then plays on", async () => {
+    await page.evaluate(() => Lyra.player.audio.play().catch(() => {}));
+    await pause(page, 300);
+    await page.locator('.llab-line[data-i="2"]').scrollIntoViewIfNeeded();
+    await pause(page, 200);
+    const box = await page.locator('.llab-line[data-i="2"]').boundingBox();
+    await page.mouse.move(box.x + 24, box.y + box.height / 2);
+    await page.mouse.down();
+    await pause(page, 680);
+    await page.mouse.up();
+    await page.fill(".llab-edit-input", "this should be thrown away");
+    await page.click('.llab-edit [data-edit="cancel"]');
+    await pause(page, 500);
+    const after = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.app.tracks[0].id);
+      return {
+        text: t.lyricsSynced.lines[2].text,
+        dom: document.querySelector('.llab-line[data-i="2"]').textContent.trim(),
+        editor: !!document.querySelector(".llab-edit-input"),
+        paused: Lyra.player.audio.paused,
+        editing: Lyra.lyricsSync._state().editing,
+      };
+    });
+    assert.equal(after.text, "Seven eight nine");
+    assert.equal(after.dom, "Seven eight nine");
+    assert.equal(after.editor, false);
+    assert.equal(after.editing, -1);
+    assert.equal(after.paused, false, "playback resumes without leaving the lyrics screen");
+    await page.evaluate(() => Lyra.player.audio.pause());
   });
 
   await check("offset nudge shifts which line is active and is saved", async () => {

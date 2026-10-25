@@ -1,10 +1,14 @@
-/* Lyra.player — single audio element, queue, shuffle/repeat, Media Session. */
+/* Lyra.player — single audio element, queue, shuffle/repeat, Media Session.
+
+   Playback on iOS is the fragile part of a web music app: a play() that is
+   still pending when the source changes rejects with AbortError, and an element
+   that has failed once can stay silent for the rest of the session. Every start
+   therefore goes through startPlayback(), and a song that still will not make a
+   sound escalates: a fresh blob URL, then a copy re-read from IndexedDB, then a
+   brand new <audio> element. */
 (function () {
   "use strict";
   window.Lyra = window.Lyra || {};
-
-  const audio = new Audio();
-  audio.preload = "auto";
 
   const listeners = {};
   function emit(evt, data) {
@@ -24,6 +28,17 @@
   let playedSeconds = 0;
   let lastTick = 0;
 
+  let loadToken = 0;
+  let errorRetries = 0;
+  let endHandled = false;
+  let endingSegment = false;
+  // iOS keeps reporting the previous song's position for a moment after the
+  // source changes; until the new source has metadata, the honest answer is
+  // the new song's start point.
+  let awaitingMeta = false;
+
+  const artUrls = new Map(); // track id -> object URL, kept for Media Session artwork
+
   function currentId() {
     return index >= 0 && index < queue.length ? queue[index] : null;
   }
@@ -39,8 +54,6 @@
     return e > 0 ? e : 0;
   }
 
-  let endingSegment = false;
-
   function seekToStart() {
     const s = startOf(current);
     if (!(s > 0)) return;
@@ -50,21 +63,11 @@
     lastTick = target;
   }
 
-  const artUrls = new Map(); // track id -> object URL, kept for Media Session artwork
-
   function artUrlFor(track) {
     if (!track || !track.art) return null;
     if (!artUrls.has(track.id)) artUrls.set(track.id, URL.createObjectURL(track.art));
     return artUrls.get(track.id);
   }
-
-  let loadToken = 0;
-  let errorRetries = 0;
-  let endHandled = false;
-  // iOS keeps reporting the previous song's position for a moment after the
-  // source changes; until the new source has metadata, the honest answer is
-  // the new song's start point.
-  let awaitingMeta = false;
 
   // The blob URL of the outgoing song is revoked a few seconds after the
   // switch rather than immediately: revoking the source iOS is still holding
@@ -77,6 +80,7 @@
   // Resolves when the element can actually play (or after a short wait).
   function waitUntilReady(ms) {
     return new Promise((resolve) => {
+      const el = audio;
       const events = ["loadedmetadata", "loadeddata", "canplay", "canplaythrough"];
       let done = false;
       let timer = 0;
@@ -84,12 +88,12 @@
         if (done) return;
         done = true;
         clearTimeout(timer);
-        events.forEach((ev) => audio.removeEventListener(ev, finish));
+        events.forEach((ev) => el.removeEventListener(ev, finish));
         resolve();
       };
-      events.forEach((ev) => audio.addEventListener(ev, finish));
+      events.forEach((ev) => el.addEventListener(ev, finish));
       timer = setTimeout(finish, ms);
-      if (audio.readyState >= 2) finish();
+      if (el.readyState >= 2) finish();
     });
   }
 
@@ -100,18 +104,100 @@
   // may already have fired.
   async function startPlayback(token) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (token !== loadToken) return;
+      if (token !== loadToken) return false;
       try {
         await audio.play();
-        return;
+        if (!audio.paused) return true;
       } catch (e) {
-        if (token !== loadToken) return; // a newer load owns playback now
-        if (e && e.name === "AbortError") continue; // superseded: loop exits above
-        await waitUntilReady(attempt === 0 ? 700 : 400);
-        if (token !== loadToken) return;
+        if (token !== loadToken) return false; // a newer load owns playback now
       }
+      await waitUntilReady(attempt === 0 ? 700 : 400);
     }
     if (token === loadToken) emit("state", state());
+    return token === loadToken && !audio.paused;
+  }
+
+  const audioState = () => (audio ? audio : null);
+
+  // Point the element at the loaded song again with a brand new blob URL.
+  function rebuildSource() {
+    if (!current || !current.audio) return false;
+    const old = currentUrl;
+    try { audio.pause(); } catch (e) { /* nothing playing */ }
+    let url;
+    try {
+      url = URL.createObjectURL(current.audio);
+    } catch (e) {
+      return false;
+    }
+    currentUrl = url;
+    audio.src = url;
+    try { audio.load(); } catch (e) { /* retried by the caller */ }
+    if (old && old !== url) revokeSoon(old);
+    awaitingMeta = true;
+    lastTick = 0;
+    audio.addEventListener("loadedmetadata", seekToStart, { once: true });
+    return true;
+  }
+
+  // The last resort when an element refuses to make a sound: throw it away.
+  function replaceAudioElement() {
+    const old = audio;
+    try { old.pause(); } catch (e) {}
+    try { old.removeAttribute("src"); old.load(); } catch (e) {}
+    audio = createAudio();
+    return audio;
+  }
+
+  /* A song that failed to start, in order of cheapness: same bytes, new source;
+     the copy stored in IndexedDB (an in-memory File can go stale); a fresh
+     element. Returns true when sound is actually coming out. */
+  async function emergencyRestart(token) {
+    if (!current || token !== loadToken) return false;
+    if (rebuildSource()) {
+      if (await startPlayback(token)) return true;
+      if (token !== loadToken) return false;
+    }
+    try {
+      const fresh = await window.Lyra.db.getTrack(current.id);
+      if (fresh && fresh.audio) current.audio = fresh.audio;
+    } catch (e) { /* keep the bytes we have */ }
+    if (token !== loadToken || !current) return false;
+    replaceAudioElement();
+    if (!rebuildSource()) return false;
+    return startPlayback(token);
+  }
+
+  // Resume the loaded song, recovering if it will not start.
+  async function resume() {
+    if (!current) return false;
+    const token = loadToken;
+    if (audio.error || (audio.readyState === 0 && audio.currentSrc)) {
+      await loadTrack(current, true);
+      return true;
+    }
+    if (await startPlayback(token)) return true;
+    if (token !== loadToken) return true;
+    return emergencyRestart(token);
+  }
+
+  function updateMediaSession(track) {
+    if (!("mediaSession" in navigator)) return;
+    let artwork = [];
+    if (track.artUrl) {
+      artwork = [
+        { src: track.artUrl, sizes: "256x256", type: track.art ? track.art.type : "image/jpeg" },
+        { src: track.artUrl, sizes: "512x512", type: track.art ? track.art.type : "image/jpeg" },
+      ];
+    }
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.title || "Unknown",
+        artist: track.artist || "Unknown Artist",
+        album: track.album || "",
+        artwork,
+      });
+    } catch (e) { /* older WebKit */ }
   }
 
   async function loadTrack(track, autoplay) {
@@ -140,51 +226,41 @@
     revokeSoon(old);
     emit("track", track);
     emit("time", state());
-    if (track && autoplay) await startPlayback(token);
-  }
-
-  function updateMediaSession(track) {
-    if (!("mediaSession" in navigator)) return;
-    let artwork = [];
-    if (track.artUrl) {
-      artwork = [
-        { src: track.artUrl, sizes: "256x256", type: track.art ? track.art.type : "image/jpeg" },
-        { src: track.artUrl, sizes: "512x512", type: track.art ? track.art.type : "image/jpeg" },
-      ];
+    if (track && autoplay) {
+      const ok = await startPlayback(token);
+      if (!ok && token === loadToken) await emergencyRestart(token);
     }
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: track.title || "Unknown",
-      artist: track.artist || "Unknown Artist",
-      album: track.album || "",
-      artwork,
-    });
+    return true;
   }
 
   function state() {
-    return {
+    const st = {
       track: current,
       queue: queue.slice(),
       index,
       shuffle,
       repeat,
-      playing: !audio.paused && !audio.ended,
-      currentTime: awaitingMeta ? startOf(current) : (audio.currentTime || 0),
-      duration: Number.isFinite(audio.duration) ? audio.duration : (current ? current.duration || 0 : 0),
+      playing: !!(audio && !audio.paused && !audio.ended),
+      currentTime: awaitingMeta ? startOf(current) : ((audio && audio.currentTime) || 0),
+      duration: audio && Number.isFinite(audio.duration)
+        ? audio.duration
+        : (current ? current.duration || 0 : 0),
     };
+    return st;
   }
 
   async function countPlay() {
     if (playCounted || !current) return;
     playCounted = true;
     try {
-      const t = await window.Lyra.db.getTrack(current.id);
-      if (!t) return;
-      t.plays = (t.plays || 0) + 1;
-      t.lastPlayedAt = Date.now();
-      await window.Lyra.db.putTrack(t);
-      current.plays = t.plays;
-      current.lastPlayedAt = t.lastPlayedAt;
-      emit("playcount", t);
+      // Metadata-only write: never re-store the song's audio for a play count.
+      const fresh = await window.Lyra.db.saveMeta(current.id, {
+        plays: (current.plays || 0) + 1,
+        lastPlayedAt: Date.now(),
+      });
+      current.plays = fresh.plays;
+      current.lastPlayedAt = fresh.lastPlayedAt;
+      emit("playcount", current);
     } catch (e) { /* non-fatal */ }
   }
 
@@ -197,8 +273,115 @@
     return keepFirstId != null ? [keepFirstId, ...rest] : rest;
   }
 
+  /* ------------------------------------------------------- element wiring */
+  function attachAudioHandlers(el) {
+    el.preload = "auto";
+
+    el.addEventListener("play", () => {
+      if (el !== audio) return;
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
+      emit("state", state());
+    });
+    el.addEventListener("pause", () => {
+      if (el !== audio) return;
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+      emit("state", state());
+    });
+    el.addEventListener("loadedmetadata", () => {
+      if (el !== audio) return;
+      awaitingMeta = false;
+    });
+    el.addEventListener("timeupdate", () => {
+      if (el !== audio) return;
+      awaitingMeta = false;
+      const now = el.currentTime || 0;
+      if (lastTick && now > lastTick) playedSeconds += now - lastTick;
+      lastTick = now;
+      if (playedSeconds >= 30) countPlay();
+      emit("time", state());
+      const end = endOf(current);
+      if (end > 0 && !el.paused && now >= end - 0.06) finishSegment();
+    });
+    el.addEventListener("seeked", () => {
+      if (el !== audio) return;
+      lastTick = el.currentTime || 0;
+    });
+    el.addEventListener("durationchange", () => {
+      if (el !== audio) return;
+      emit("time", state());
+    });
+    el.addEventListener("ended", () => {
+      if (el !== audio) return;
+      handleEnded();
+    });
+    el.addEventListener("error", () => {
+      if (el !== audio || !current || !el.error || errorRetries >= 2) return;
+      errorRetries++;
+      const token = loadToken;
+      setTimeout(() => {
+        if (token !== loadToken) return;
+        if (!rebuildSource()) return;
+        startPlayback(token).then((ok) => { if (!ok) emergencyRestart(token); });
+      }, 300);
+    });
+
+    if ("mediaSession" in navigator) {
+      el.addEventListener("timeupdate", () => {
+        if (el !== audio || !current || !Number.isFinite(el.duration)) return;
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: el.duration,
+            playbackRate: el.playbackRate,
+            position: el.currentTime,
+          });
+        } catch (e) {}
+      });
+    }
+  }
+
+  function createAudio() {
+    const el = new Audio();
+    attachAudioHandlers(el);
+    return el;
+  }
+
+  let audio = createAudio();
+
+  // Reached the end: count the play and move on. Guarded so the ended event
+  // and the watchdog below can never advance twice for one song.
+  async function handleEnded() {
+    if (!current || endHandled) return;
+    endHandled = true;
+    countPlay();
+    try { await player.next(false); } catch (e) { /* keep the UI consistent */ }
+    emit("state", state());
+  }
+
+  // iOS sometimes drops `ended` (an interruption, a pause on the last frame),
+  // which left the app sitting on a finished song. Poll the element's own flag.
+  setInterval(() => { if (current && audio && audio.ended) handleEnded(); }, 1000);
+
+  // Reached this song's end point: advance exactly like a natural finish.
+  async function finishSegment() {
+    if (endingSegment) return;
+    endingSegment = true;
+    const id = currentId();
+    countPlay();
+    try {
+      await player.next(false);
+      // At the end of the queue with repeat off nothing advanced — stop here.
+      const end = endOf(current);
+      if (currentId() === id && end > 0 && audio.currentTime >= end - 0.06) {
+        audio.pause();
+        try { audio.currentTime = end; } catch (e) {}
+      }
+    } finally {
+      endingSegment = false;
+    }
+  }
+
   const player = {
-    audio,
+    get audio() { return audio; },
 
     on(evt, cb) {
       (listeners[evt] = listeners[evt] || []).push(cb);
@@ -233,7 +416,7 @@
         if (audio.ended || (dur && audio.currentTime >= dur - 0.15)) {
           try { audio.currentTime = startOf(current); } catch (e) { /* ignore */ }
         }
-        if (audio.paused) await startPlayback(loadToken);
+        if (audio.paused) await resume();
         emit("queue", state());
         return;
       }
@@ -323,10 +506,7 @@
         return;
       }
       if (audio.paused) {
-        // Same retry path as a fresh load: a single rejected play() used to
-        // leave the button showing play with nothing happening.
-        if (audio.error || (audio.readyState === 0 && audio.currentSrc)) await loadTrack(current, true);
-        else await startPlayback(loadToken);
+        await resume();
       } else {
         audio.pause();
       }
@@ -336,7 +516,7 @@
       if (!queue.length) return;
       if (repeat === "one" && !manual) {
         audio.currentTime = startOf(current);
-        try { await audio.play(); } catch (e) {}
+        await resume();
         return;
       }
       let i = index + 1;
@@ -396,74 +576,6 @@
     },
   };
 
-  audio.addEventListener("play", () => {
-    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
-    emit("state", state());
-  });
-  audio.addEventListener("pause", () => {
-    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
-    emit("state", state());
-  });
-  audio.addEventListener("loadedmetadata", () => { awaitingMeta = false; });
-  audio.addEventListener("timeupdate", () => {
-    awaitingMeta = false;
-    const now = audio.currentTime || 0;
-    if (lastTick && now > lastTick) playedSeconds += now - lastTick;
-    lastTick = now;
-    if (playedSeconds >= 30) countPlay();
-    emit("time", state());
-    const end = endOf(current);
-    if (end > 0 && !audio.paused && now >= end - 0.06) finishSegment();
-  });
-  audio.addEventListener("seeked", () => { lastTick = audio.currentTime || 0; });
-
-  // Reached the end: count the play and move on. Guarded so the ended event
-  // and the watchdog below can never advance twice for one song.
-  async function handleEnded() {
-    if (!current || endHandled) return;
-    endHandled = true;
-    countPlay();
-    try { await player.next(false); } catch (e) { /* keep the UI consistent */ }
-    emit("state", state());
-  }
-  audio.addEventListener("ended", handleEnded);
-  // iOS sometimes drops `ended` (an interruption, a pause on the last frame),
-  // which left the app sitting on a finished song. Poll the element's own flag.
-  setInterval(() => { if (current && audio.ended) handleEnded(); }, 1000);
-
-  // A spurious decode error right after a source swap: reload the same URL
-  // twice before giving up, instead of staying silent until a reload.
-  audio.addEventListener("error", () => {
-    if (!current || !audio.error || errorRetries >= 2) return;
-    errorRetries++;
-    const token = loadToken;
-    setTimeout(() => {
-      if (token !== loadToken) return;
-      try { audio.load(); } catch (e) { return; }
-      audio.play().catch(() => {});
-    }, 300);
-  });
-
-  // Reached this song's end point: advance exactly like a natural finish.
-  async function finishSegment() {
-    if (endingSegment) return;
-    endingSegment = true;
-    const id = currentId();
-    countPlay();
-    try {
-      await player.next(false);
-      // At the end of the queue with repeat off nothing advanced — stop here.
-      const end = endOf(current);
-      if (currentId() === id && end > 0 && audio.currentTime >= end - 0.06) {
-        audio.pause();
-        try { audio.currentTime = end; } catch (e) {}
-      }
-    } finally {
-      endingSegment = false;
-    }
-  }
-  audio.addEventListener("durationchange", () => emit("time", state()));
-
   if ("mediaSession" in navigator) {
     const ms = navigator.mediaSession;
     const set = (action, fn) => { try { ms.setActionHandler(action, fn); } catch (e) {} };
@@ -474,17 +586,9 @@
     set("seekto", (d) => { if (d.seekTime != null) player.seek(d.seekTime); });
     set("seekbackward", (d) => player.seek((audio.currentTime || 0) - (d.seekOffset || 10)));
     set("seekforward", (d) => player.seek((audio.currentTime || 0) + (d.seekOffset || 10)));
-    audio.addEventListener("timeupdate", () => {
-      if (!current || !Number.isFinite(audio.duration)) return;
-      try {
-        ms.setPositionState({
-          duration: audio.duration,
-          playbackRate: audio.playbackRate,
-          position: audio.currentTime,
-        });
-      } catch (e) {}
-    });
   }
+
+  player._test = { audioState, rebuildSource, emergencyRestart };
 
   window.Lyra.player = player;
 })();
