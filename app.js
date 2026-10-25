@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.20";
+  const APP_VERSION = "1.4.21";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -1096,7 +1096,9 @@
         artists: () => ({ title: "Artists", list: [] }),
         playlists: () => ({ title: "Playlists", list: [] }),
         liked: () => ({ title: "Liked Songs", list: tracks.filter((t) => t.liked) }),
-        never: () => ({ title: "Never played", list: tracks.filter((t) => !t.plays) }),
+        // "Never played" means never started. The play count only lands after
+        // 30 seconds, so a skipped song used to sit here as if untouched.
+        never: () => ({ title: "Never played", list: tracks.filter((t) => !t.plays && !t.lastPlayedAt) }),
       };
       return map[params.name] ? map[params.name]() : null;
     }
@@ -1124,8 +1126,10 @@
     const d = detailData(params);
     if (!d) return `<div class="screen">${detailHeader("Not found")}</div>`;
     const total = d.list.reduce((s, t) => s + (t.duration || 0), 0);
-    const rows = d.list.map((t) => songRow(t)).join("") ||
-      `<div class="empty"><div class="big">Nothing here yet</div><div class="small">Add songs to see them here.</div></div>`;
+    const empty = params.kind === "browse" && params.name === "never"
+      ? `<div class="empty"><div class="big">Nothing left to discover</div><div class="small">Every song here has been played at least once.</div></div>`
+      : `<div class="empty"><div class="big">Nothing here yet</div><div class="small">Add songs to see them here.</div></div>`;
+    const rows = d.list.map((t) => songRow(t)).join("") || empty;
 
     return `<div class="screen">
       ${detailHeader("")}
@@ -2420,8 +2424,27 @@
     }, { passive: true });
   }
 
+  // iOS Safari's back-swipe from the screen edge is a native gesture a page
+  // cannot cancel. What we can do is keep one spare history entry: the swipe
+  // then resolves as a Back we handle instead of leaving Lyra and showing
+  // whatever the browser had before. The entry is re-armed on every popstate,
+  // so it keeps working, and inside the app it goes back one screen.
+  function guardEdgeSwipe() {
+    const arm = () => {
+      try { history.pushState({ lyra: 1 }, "", location.href); } catch (e) { /* no history */ }
+    };
+    arm();
+    window.addEventListener("popstate", () => {
+      arm();
+      // On a song / album / artist page the swipe is a Back; on a tab it simply
+      // does nothing rather than jumping somewhere unexpected.
+      if (route.view === "detail") back();
+    });
+  }
+
   function wireChrome() {
     wireRipples();
+    guardEdgeSwipe();
     document.querySelectorAll(".nav-btn").forEach((b) => {
       b.onclick = () => {
         const view = b.dataset.tab;
@@ -2445,13 +2468,16 @@
       openNp();
     });
 
-    // Swipe the mini player left or right for next / previous; hold it for the
-    // Up next queue.
+    // Drag the mini player: up to lift it towards Now Playing (it grows as you
+    // pull, and opens if you let go past the mark), sideways for next / previous,
+    // hold for the Up next queue.
+    const MINI_DRAG = 160;   // the pull that reaches full size
+    const MINI_OPEN = 84;    // letting go past this opens Now Playing
     let mg = null;
     mini.addEventListener("touchstart", (e) => {
       if (e.touches.length !== 1 || e.target.closest("button")) return;
       const t = e.touches[0];
-      mg = { x: t.clientX, y: t.clientY, dx: 0, moved: false, held: false, timer: 0 };
+      mg = { x: t.clientX, y: t.clientY, dx: 0, dy: 0, axis: null, moved: false, held: false, timer: 0 };
       mg.timer = setTimeout(() => {
         if (!mg || mg.moved) return;
         mg.held = true;
@@ -2462,11 +2488,21 @@
       if (!mg || e.touches.length !== 1) return;
       const t = e.touches[0];
       mg.dx = t.clientX - mg.x;
+      mg.dy = mg.y - t.clientY; // positive while lifting
       if (Math.abs(mg.dx) > 8 || Math.abs(t.clientY - mg.y) > 8) {
         mg.moved = true;
         clearTimeout(mg.timer);
       }
-      if (Math.abs(mg.dx) > Math.abs(t.clientY - mg.y)) {
+      // Lock to one axis at a time, so a slightly diagonal swipe still behaves.
+      if (!mg.axis && (Math.abs(mg.dx) > 6 || Math.abs(mg.dy) > 6)) {
+        mg.axis = Math.abs(mg.dy) > Math.abs(mg.dx) ? "y" : "x";
+      }
+      if (mg.axis === "y") {
+        const lift = Math.max(-24, Math.min(MINI_DRAG, mg.dy));
+        const grow = Math.max(0, lift) / MINI_DRAG;
+        mini.classList.add("dragging");
+        mini.style.transform = `translateY(${-lift * 0.62}px) scale(${1 + grow * 0.45})`;
+      } else if (mg.axis === "x") {
         mini.style.transform = `translateX(${Math.max(-70, Math.min(70, mg.dx))}px)`;
       }
     }, { passive: true });
@@ -2475,11 +2511,17 @@
       mg = null;
       if (!g) return;
       clearTimeout(g.timer);
+      mini.classList.remove("dragging");
       mini.style.transform = "";
       if (g.held) {
         suppressMiniTap = true;
         setTimeout(() => { suppressMiniTap = false; }, 500);
-      } else if (g.moved && Math.abs(g.dx) > 40) {
+      } else if (g.axis === "y" && g.dy > MINI_OPEN) {
+        // Pulled far enough: it becomes Now Playing instead of snapping back.
+        suppressMiniTap = true;
+        setTimeout(() => { suppressMiniTap = false; }, 500);
+        openNp();
+      } else if (g.axis === "x" && g.moved && Math.abs(g.dx) > 40) {
         suppressMiniTap = true;
         setTimeout(() => { suppressMiniTap = false; }, 500);
         if (g.dx < 0) player.next(true); else player.prev();
@@ -2580,6 +2622,15 @@
       local.plays = t.plays;
       local.lastPlayedAt = t.lastPlayedAt;
     }
+    dirtyViews.add("home");
+    dirtyViews.add("library");
+  });
+  // A song that merely started still counts as played for "Recently played"
+  // and drops out of "Never played", so Home and Library need a rebuild.
+  player.on("started", (t) => {
+    if (!t) return;
+    const local = tracks.find((x) => x.id === t.id);
+    if (local) local.lastPlayedAt = t.lastPlayedAt;
     dirtyViews.add("home");
     dirtyViews.add("library");
   });

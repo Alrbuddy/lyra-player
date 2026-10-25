@@ -379,6 +379,12 @@ input[type="range"]::-webkit-slider-thumb {
   transition: transform 0.25s var(--spring), opacity 0.2s;
 }
 .mini.pop { transform: scale(1.03); }
+/* While a finger is pulling it, follow that finger exactly: no easing lag. */
+.mini.dragging {
+  transition: none;
+  transform-origin: 50% 100%;
+  z-index: 42;
+}
 .mini .mini-art { width: 40px; height: 40px; border-radius: 12px; overflow: hidden; flex: none; }
 .mini .mini-art .art, .mini .mini-art .art-ph { width: 40px; height: 40px; }
 .mini-info { flex: 1; min-width: 0; }

@@ -214,6 +214,7 @@
     current = track;
     if (track) track.artUrl = artUrlFor(track);
     playCounted = false;
+    startedFor = null;
     playedSeconds = 0;
     lastTick = 0;
     if (track) {
@@ -252,6 +253,19 @@
     return st;
   }
 
+  // Remember the first moment a song actually starts in this load. Metadata
+  // only, like the play count, so the song's audio is never rewritten.
+  let startedFor = null;
+  async function markStarted(t) {
+    if (!t || startedFor === t.id) return;
+    startedFor = t.id;
+    try {
+      const fresh = await window.Lyra.db.saveMeta(t.id, { lastPlayedAt: Date.now() });
+      t.lastPlayedAt = fresh.lastPlayedAt;
+      emit("started", t);
+    } catch (e) { /* non-fatal */ }
+  }
+
   async function countPlay() {
     if (playCounted || !current) return;
     playCounted = true;
@@ -284,6 +298,13 @@
       if (el !== audio) return;
       if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
       emit("state", state());
+    });
+    // Sound actually came out of this song, so it has been played — even if you
+    // skip it before the 30-second play count. Without this a skipped song sat
+    // in "Never played" forever next to songs you had definitely heard.
+    el.addEventListener("playing", () => {
+      if (el !== audio) return;
+      if (current) markStarted(current);
     });
     el.addEventListener("pause", () => {
       if (el !== audio) return;

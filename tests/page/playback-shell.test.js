@@ -1900,6 +1900,123 @@ async function dragTouch(page, fromY, toY) {
     assert.ok(out.stages.includes("uploading"), "progress stages still reported");
   });
 
+  console.log("\nNever played, mini drag and back swipe");
+  await check("a song that merely started leaves 'Never played'", async () => {
+    await seed(page, null);
+    const ids = await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      const untouched = await Lyra.db.addTrack({
+        title: "Untouched", artist: "Fixture Artist", album: "", duration: 90,
+        audio: base.audio, addedAt: Date.now() + 5, plays: 0, liked: false, lyrics: "",
+      });
+      await Lyra.app.refreshData();
+      return { started: base.id, untouched };
+    });
+    const before = await page.evaluate(() => Lyra.app._test
+      .detailData({ kind: "browse", name: "never" }).list.map((t) => t.title).sort());
+    assert.equal(before.length, 2, "both unplayed songs are listed: " + before);
+
+    await page.evaluate((id) => Lyra.player.playQueue([id], 0), ids.started);
+    await page.waitForTimeout(800);
+    const after = await page.evaluate(async (id) => {
+      const stored = await Lyra.db.getTrack(id);
+      const local = Lyra.app.tracks.find((t) => t.id === id);
+      return {
+        never: Lyra.app._test.detailData({ kind: "browse", name: "never" }).list.map((t) => t.title),
+        plays: stored.plays,
+        storedAt: stored.lastPlayedAt || 0,
+        localAt: local.lastPlayedAt || 0,
+      };
+    }, ids.started);
+    assert.deepEqual(after.never, ["Untouched"], "the song you started dropped out, the untouched one stayed");
+    assert.equal(after.plays, 0, "without waiting for the 30-second play count");
+    assert.ok(after.storedAt > 0, "the start time is saved on the song");
+    assert.equal(after.localAt, after.storedAt, "and the app's copy knows about it");
+  });
+
+  await check("dragging the mini player up grows it and opens Now Playing", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      await Lyra.player.playQueue([Lyra.app.tracks[0].id], 0);
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    await page.waitForTimeout(300);
+
+    const pull = (toLift) => page.evaluate(async (toLift) => {
+      const mini = document.getElementById("mini");
+      const r = mini.getBoundingClientRect();
+      const x = Math.round(r.left + r.width / 2);
+      const y = Math.round(r.top + r.height / 2);
+      const mk = (cy) => new Touch({ identifier: 31, target: mini, clientX: x, clientY: cy });
+      const fire = (type, cy, list) => mini.dispatchEvent(new TouchEvent(type, {
+        bubbles: true, cancelable: true,
+        touches: (list || []).map(mk), targetTouches: (list || []).map(mk), changedTouches: [mk(cy)],
+      }));
+      fire("touchstart", y, [y]);
+      const steps = 5;
+      for (let i = 1; i <= steps; i++) {
+        const cy = Math.round(y - (toLift * i) / steps);
+        fire("touchmove", cy, [cy]);
+        await new Promise((res) => setTimeout(res, 16));
+      }
+      const during = { transform: mini.style.transform, dragging: mini.classList.contains("dragging") };
+      fire("touchend", y - toLift, []);
+      await new Promise((res) => setTimeout(res, 500));
+      return {
+        during,
+        after: mini.style.transform,
+        dragging: mini.classList.contains("dragging"),
+        np: !document.getElementById("np").classList.contains("hidden"),
+      };
+    }, toLift);
+
+    const small = await pull(50);
+    assert.equal(small.during.dragging, true, "the player follows the finger");
+    assert.match(small.during.transform, /translateY\(-/, "it lifts (" + small.during.transform + ")");
+    assert.match(small.during.transform, /scale\(1\.[1-9]/, "and grows (" + small.during.transform + ")");
+    assert.equal(small.after, "", "a short pull springs back");
+    assert.equal(small.np, false, "Now Playing stays closed");
+
+    const big = await pull(130);
+    assert.match(big.during.transform, /scale\(1\.[2-9]/, "a full pull grows it further (" + big.during.transform + ")");
+    assert.equal(big.np, true, "letting go past the mark opens Now Playing");
+    await closeNp(page);
+  });
+
+  await check("the back gesture stays inside the app instead of leaving", async () => {
+    await seed(page, null);
+    await page.evaluate(() => Lyra.app.go("library"));
+    await page.waitForTimeout(250);
+    const before = page.url();
+    await page.evaluate(async () => {
+      history.back();
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    await page.waitForTimeout(300);
+    const after = await page.evaluate(() => ({
+      url: location.href,
+      alive: !!(window.Lyra && Lyra.app && Lyra.app.tracks),
+      shown: [...document.querySelectorAll(".screen-host")].filter((h) => !h.hidden).map((h) => h.dataset.screen),
+    }));
+    assert.equal(after.url, before, "the page did not navigate away");
+    assert.equal(after.alive, true, "the app is still running");
+    assert.deepEqual(after.shown, ["library"], "and still on the same screen");
+
+    await page.evaluate(() => Lyra.app.go("detail", { kind: "artist", name: "Fixture Artist" }, false));
+    await page.waitForTimeout(250);
+    await page.evaluate(async () => {
+      history.back();
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    await page.waitForTimeout(250);
+    const backed = await page.evaluate(() => ({
+      url: location.href,
+      shown: [...document.querySelectorAll(".screen-host")].filter((h) => !h.hidden).map((h) => h.dataset.screen),
+    }));
+    assert.equal(backed.url, before, "still no navigation away from the app");
+    assert.equal(backed.shown.includes("detail"), false, "a swipe on a song page steps back a screen");
+  });
+
   console.log("\nMotion");
   await check("a press ripples from the finger and still plays the row", async () => {
     await seed(page, null);
