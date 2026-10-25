@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.15";
+  const APP_VERSION = "1.4.16";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -173,6 +173,14 @@
     return groupTracks(list, artistOf, "artistManual").sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  // One song is not a shelf: an artist only gets a row once two or more of
+  // their songs are in the library. The songs themselves still carry the name,
+  // so nothing about the music changes — the artist simply appears as soon as
+  // a second song joins them.
+  function listedArtists(list) {
+    return artistsOf(list).filter((a) => a.tracks.length >= 2);
+  }
+
   // One song with a stray album tag is not an album — showing those made a
   // duplicate single-song album per download. An album counts only when at
   // least two songs share the name, whether the tag came from the file or from
@@ -293,7 +301,10 @@
     const key = screenKey(route.view);
     const host = ensureHost(key);
     if (activeKey) scrollByView[activeKey] = shell.scrollTop;
-    const restore = opts.top ? 0 : key === "detail" ? 0 : scrollByView[key] || 0;
+    // opts.keep holds the reader's place — a save (album, artist, lyrics) must
+    // not throw you back to the top of a long list.
+    const kept = opts.keep ? shell.scrollTop : null;
+    const restore = kept != null ? kept : opts.top ? 0 : key === "detail" ? 0 : scrollByView[key] || 0;
     host.innerHTML = viewHTML(route.view);
     bindView(route.view, host);
     showOnly(key);
@@ -301,6 +312,7 @@
     dirtyViews.delete(key);
     applyChrome();
     shell.scrollTop = restore;
+    if (kept != null) scrollByView[key] = restore;
   }
 
   // ---------- Shared row ----------
@@ -511,10 +523,12 @@
           <div style="font-size:13px">${esc(a.name)}</div></button>`;
       }).join("") + `</div>`;
     } else if (libFilter === "artists") {
-      body = artistsOf(tracks).map((a) =>
+      const artists = listedArtists(tracks);
+      body = artists.length ? artists.map((a) =>
         `<button class="sheet-item" data-detail-kind="artist" data-detail-val="${esc(a.name)}">
           <span class="avatar">${esc(a.name[0] || "?").toUpperCase()}</span>
-          ${esc(a.name)}<span class="dim" style="margin-left:auto">${a.tracks.length} songs</span></button>`).join("");
+          ${esc(a.name)}<span class="dim" style="margin-left:auto">${a.tracks.length} songs</span></button>`).join("")
+        : `<div class="empty"><div class="big">No artists yet</div><div class="small">An artist shows up once two or more of their songs are here.</div></div>`;
     }
 
     const none = selected.size === 0;
@@ -1017,8 +1031,9 @@
       }).join("")}</div></div>`;
     }
     if (params.kind === "browse" && params.name === "artists") {
-      return `<div class="screen">${detailHeader("Artists")}${artistsOf(tracks).map((a) =>
-        `<button class="sheet-item" data-detail-kind="artist" data-detail-val="${esc(a.name)}"><span class="avatar">${esc(a.name[0] || "?").toUpperCase()}</span>${esc(a.name)}</button>`).join("")}</div>`;
+      const artists = listedArtists(tracks);
+      return `<div class="screen">${detailHeader("Artists")}${artists.map((a) =>
+        `<button class="sheet-item" data-detail-kind="artist" data-detail-val="${esc(a.name)}"><span class="avatar">${esc(a.name[0] || "?").toUpperCase()}</span>${esc(a.name)}</button>`).join("") || `<div class="empty"><div class="big">No artists yet</div><div class="small">An artist shows up once two or more of their songs are here.</div></div>`}</div>`;
     }
     if (params.kind === "browse" && params.name === "playlists") {
       return `<div class="screen">${detailHeader("Playlists")}${playlists.map((p) =>
@@ -1318,7 +1333,7 @@
         if (player.refreshMediaSession) player.refreshMediaSession();
       }
       if (selecting) { selecting = false; selected.clear(); }
-      render({ top: true });
+      render({ keep: true });
       toast(many ? `${saved} songs updated` : "Saved");
     };
 

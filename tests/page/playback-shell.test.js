@@ -746,6 +746,11 @@ async function dragTouch(page, fromY, toY) {
         title: "Zed Song", artist: "Zed", album: "", duration: 100,
         audio: base.audio, addedAt: Date.now() + 5, plays: 0, liked: false, lyrics: "",
       });
+      // A second song, so the artist has a row of its own to click.
+      await Lyra.db.addTrack({
+        title: "Zed B-Side", artist: "Zed", album: "", duration: 100,
+        audio: base.audio, addedAt: Date.now() + 6, plays: 0, liked: false, lyrics: "",
+      });
       await Lyra.app.refreshData();
       return { alpha: base.id, zed: other };
     });
@@ -759,7 +764,7 @@ async function dragTouch(page, fromY, toY) {
     await page.waitForTimeout(200);
     await page.click('.sheet-item[data-detail-val="Zed"]');
     await page.waitForTimeout(250);
-    await page.click('#detail-rows [data-play-track]');
+    await page.click(`#detail-rows [data-play-track="${ids.zed}"]`);
     await page.waitForTimeout(700);
     const st = await page.evaluate(() => ({
       id: Lyra.player.state().track.id,

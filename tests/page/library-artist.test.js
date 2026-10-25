@@ -217,6 +217,61 @@ async function subtitle(page, id) {
     assert.equal(await subtitle(page, b.id), "YFG Fatso", "row clean again too");
   });
 
+  console.log("\nArtist shelf");
+  await check("a single-song artist has no row until a second song joins", async () => {
+    await seed(page, [
+      { title: "A", artist: "YFG Fatso", album: "" },
+      { title: "B", artist: "YFG Fatso", album: "" },
+      { title: "C", artist: "One Hit", album: "" },
+      { title: "D", artist: "Two Songs", album: "" },
+      { title: "E", artist: "Two Songs", album: "" },
+    ]);
+    await tab(page, "artists");
+    const text = await libText(page);
+    assert.match(text, /YFG Fatso[\s\S]*2 songs/);
+    assert.match(text, /Two Songs[\s\S]*2 songs/);
+    assert.doesNotMatch(text, /One Hit/, "one song is not an artist row:\n" + text);
+    await tab(page, "songs");
+    const c = await track(page, "C");
+    assert.equal(await subtitle(page, c.id), "One Hit", "the song keeps its artist name");
+
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks.find((t) => t.title === "C");
+      await Lyra.db.addTrack({
+        title: "C Two", artist: "One Hit", album: "", duration: 100,
+        addedAt: Date.now() + 9, plays: 0, liked: false, lyrics: "", audio: base.audio,
+      });
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await tab(page, "artists");
+    assert.match(await libText(page), /One Hit[\s\S]*2 songs/, "joins the shelf once there are two");
+  });
+
+  console.log("\nEditing keeps your place");
+  await check("saving an album does not jump the list back to the top", async () => {
+    const specs = [];
+    for (let i = 0; i < 24; i++) specs.push({ title: "Row " + i, artist: "YFG Fatso", album: "" });
+    await seed(page, specs);
+    await tab(page, "songs");
+    const before = await page.evaluate(async () => {
+      const shell = document.getElementById("view");
+      shell.scrollTop = 600;
+      await new Promise((r) => setTimeout(r, 120));
+      return shell.scrollTop;
+    });
+    assert.ok(before > 300, "the list actually scrolled (" + before + ")");
+    await page.evaluate(() => Lyra.app._test.editInfoSheet([Lyra.app.tracks[0]]));
+    await page.waitForTimeout(200);
+    await page.fill("#ef-album", "Tape 2020");
+    await page.click("#ef-save");
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(() => document.getElementById("view").scrollTop);
+    assert.ok(after > before - 40, "stayed at " + after + " (was " + before + ")");
+    const closed = await page.evaluate(() => document.getElementById("sheet").classList.contains("hidden"));
+    assert.equal(closed, true, "the sheet closed");
+  });
+
   console.log("\nEdge cases");
   await check("clearing the artist falls back to Unknown Artist", async () => {
     await seed(page, [{ title: "A", artist: "YFG Fatso", album: "" }]);
