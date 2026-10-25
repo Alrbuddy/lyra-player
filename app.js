@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.13";
+  const APP_VERSION = "1.4.14";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -526,6 +526,7 @@
       ? `<div class="bulk-bar glass">
           <span id="bulk-count">${selected.size} selected</span>
           <button class="btn ghost" id="bulk-add"${none ? " disabled" : ""}>Add to playlist</button>
+          <button class="btn ghost" id="bulk-edit"${none ? " disabled" : ""}>Edit</button>
           <button class="btn danger" id="bulk-del"${none ? " disabled" : ""}>Delete</button>
         </div>` : "";
 
@@ -1231,26 +1232,35 @@
     });
   }
 
-  // Set the artist / album by hand (downloads often have neither).
-  async function editInfoSheet(t) {
+  // Set the artist / album by hand (downloads often have neither). Pass one
+  // track, or a list to edit a whole selection at once.
+  async function editInfoSheet(target) {
+    const list = (Array.isArray(target) ? target : [target]).filter(Boolean);
+    if (!list.length) return;
+    const many = list.length > 1;
+    const first = list[0];
     const artistNames = artistsOf(tracks).map((a) => a.name).filter((n) => n !== UNKNOWN_ARTIST);
     const albumNames = albumsOf(tracks).map((a) => a.name);
     const options = (names) => names.map((n) => `<option value="${esc(n)}"></option>`).join("");
-    const currentArtist = artistOf(t) === UNKNOWN_ARTIST ? "" : artistOf(t);
+    const currentArtist = !many && artistOf(first) !== UNKNOWN_ARTIST ? artistOf(first) : "";
+    const currentAlbum = many ? "" : albumName(first);
+    const title = many ? `Artist &amp; album · ${list.length} songs` : "Artist &amp; album";
 
-    openSheet(`<div class="sheet-title">Artist &amp; album</div>
+    openSheet(`<div class="sheet-title">${title}</div>
       <div class="edit-fields">
         <label class="edit-field" for="ef-artist"><span>Artist</span>
           <input id="ef-artist" type="text" list="ef-artists" autocomplete="off" autocapitalize="words" enterkeyhint="next"
-            value="${esc(currentArtist)}" placeholder="e.g. YFG Fatso">
+            value="${esc(currentArtist)}" placeholder="${many ? "Leave empty to keep each one" : "e.g. YFG Fatso"}">
         </label>
         <label class="edit-field" for="ef-album"><span>Album <span class="edit-opt">optional</span></span>
           <input id="ef-album" type="text" list="ef-albums" autocomplete="off" autocapitalize="words" enterkeyhint="done"
-            value="${esc(albumName(t))}" placeholder="Leave empty for none">
+            value="${esc(currentAlbum)}" placeholder="${many ? "Leave empty to keep each one" : "Leave empty for none"}">
         </label>
         <datalist id="ef-artists">${options(artistNames)}</datalist>
         <datalist id="ef-albums">${options(albumNames)}</datalist>
-        <div class="edit-note">Songs that share an artist are grouped under Artists. An album only appears in Albums when two or more songs share it, or when you name it here.</div>
+        <div class="edit-note">${many
+          ? "Everything you fill in is applied to all " + list.length + " songs. Empty fields stay as they are. Songs that share an artist are grouped under Artists."
+          : "Songs that share an artist are grouped under Artists. An album only appears in Albums when two or more songs share it, or when you name it here."}</div>
       </div>
       <div class="sheet-actions">
         <button class="btn ghost" id="ef-cancel">Cancel</button>
@@ -1268,20 +1278,42 @@
     };
 
     $("#ef-save").onclick = async () => {
-      const artist = tagName(artistInput.value) || UNKNOWN_ARTIST;
+      const artist = tagName(artistInput.value);
       const album = tagName(albumInput.value);
       closeSheet();
-      if (artist === artistOf(t) && album === albumName(t)) return;
-      t.artist = artist;
-      t.artistManual = artist !== UNKNOWN_ARTIST;
-      t.album = album;
-      t.albumManual = !!album;
-      await db.putTrack(t);
+      if (many && !artist && !album) { toast("Nothing changed"); return; }
+      let saved = 0;
+      for (const t of list) {
+        let changed = false;
+        if (artist) {
+          t.artist = artist;
+          t.artistManual = true;
+          changed = true;
+        } else if (!many) {
+          t.artist = UNKNOWN_ARTIST;
+          t.artistManual = false;
+          changed = true;
+        }
+        if (album) {
+          t.album = album;
+          t.albumManual = true;
+          changed = true;
+        } else if (!many) {
+          t.album = "";
+          t.albumManual = false;
+          changed = true;
+        }
+        if (!changed) continue;
+        await db.putTrack(t);
+        saved++;
+      }
+      if (!saved) { toast("Nothing changed"); return; }
       await refreshData();
-      // If this song is the one loaded in the player, update it in place too.
+      // If the loaded song was part of the edit, update the player in place.
       const cur = player.state().track;
-      if (cur && cur.id === t.id) {
-        const fresh = tracks.find((x) => x.id === t.id) || t;
+      const touched = cur && list.some((t) => t.id === cur.id);
+      if (touched) {
+        const fresh = tracks.find((x) => x.id === cur.id) || cur;
         cur.artist = fresh.artist;
         cur.artistManual = fresh.artistManual;
         cur.album = fresh.album;
@@ -1289,8 +1321,9 @@
         updatePlayerUI();
         if (player.refreshMediaSession) player.refreshMediaSession();
       }
-      render();
-      toast("Saved");
+      if (selecting) { selecting = false; selected.clear(); }
+      render({ top: true });
+      toast(many ? `${saved} songs updated` : "Saved");
     };
 
     artistInput.focus();
@@ -1984,7 +2017,7 @@
           row.querySelector(".checkbox").classList.toggle("on", selected.has(id));
           const c = $("#bulk-count");
           if (c) c.textContent = selected.size + " selected";
-          [$("#bulk-add"), $("#bulk-del")].forEach((b) => { if (b) b.disabled = selected.size === 0; });
+          [$("#bulk-add"), $("#bulk-edit"), $("#bulk-del")].forEach((b) => { if (b) b.disabled = selected.size === 0; });
           return;
         }
         const container = row.closest("[data-detail-list]");
@@ -2083,6 +2116,11 @@
       };
       const bulkAdd = $("#bulk-add");
       if (bulkAdd) bulkAdd.onclick = () => addToPlaylistSheet([...selected]);
+      const bulkEdit = $("#bulk-edit");
+      if (bulkEdit) bulkEdit.onclick = () => {
+        const chosen = [...selected].map((id) => tracks.find((t) => t.id === id)).filter(Boolean);
+        editInfoSheet(chosen);
+      };
       const bulkDel = $("#bulk-del");
       if (bulkDel) bulkDel.onclick = async () => {
         const ok = await confirmSheet("Delete songs", `${selected.size} songs will be removed from this device.`, "Delete", true);

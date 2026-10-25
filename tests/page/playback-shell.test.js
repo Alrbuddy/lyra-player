@@ -935,6 +935,88 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(done.label, "Select");
   });
 
+  await check("the selection's Edit button sets the artist and album for many songs", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      for (const title of ["Bulk Two", "Bulk Three"]) {
+        await Lyra.db.addTrack({
+          title, artist: "Unknown Artist", album: "", duration: 100,
+          audio: base.audio, addedAt: Date.now() + 5, plays: 0, liked: false, lyrics: "",
+        });
+      }
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(400);
+    await page.click("#lib-select");
+    await page.waitForTimeout(200);
+    for (let i = 1; i <= 3; i++) await page.click(`#lib-body .song-row:nth-child(${i})`);
+    await page.waitForTimeout(200);
+    assert.equal(await page.evaluate(() => document.getElementById("bulk-count").textContent), "3 selected");
+    assert.equal(await page.evaluate(() => document.getElementById("bulk-edit").disabled), false, "Edit wakes up with a selection");
+
+    await page.click("#bulk-edit");
+    await page.waitForTimeout(350);
+    const sheet = await page.evaluate(() => ({
+      title: (document.querySelector("#sheet .sheet-title") || {}).textContent,
+      fields: !!document.getElementById("ef-artist") && !!document.getElementById("ef-album"),
+      artistValue: (document.getElementById("ef-artist") || {}).value,
+      note: (document.querySelector(".edit-note") || {}).textContent,
+    }));
+    assert.equal(sheet.fields, true, "the same artist/album sheet opens");
+    assert.match(sheet.title, /3 songs/, "the sheet says how many songs: " + sheet.title);
+    assert.equal(sheet.artistValue, "", "a mixed selection does not pretend to have one artist");
+    assert.match(sheet.note, /Empty fields stay as they are/);
+
+    await page.fill("#ef-artist", "YFG Fatso");
+    await page.click("#ef-save");
+    await page.waitForTimeout(600);
+    const byArtist = await page.evaluate(() => ({
+      tracks: Lyra.app.tracks.map((t) => ({ artist: t.artist, manual: t.artistManual, album: t.album })),
+      bar: !!document.querySelector(".bulk-bar"),
+    }));
+    assert.equal(byArtist.tracks.length, 3);
+    assert.deepEqual(byArtist.tracks.map((t) => t.artist), ["YFG Fatso", "YFG Fatso", "YFG Fatso"]);
+    assert.deepEqual(byArtist.tracks.map((t) => t.manual), [true, true, true], "the edit is marked as yours");
+    assert.equal(byArtist.bar, false, "selection closes after saving");
+
+    // Album only: the artist field stays empty, so artists are left alone.
+    await page.click("#lib-select");
+    await page.waitForTimeout(200);
+    await page.click("#lib-body .song-row:nth-child(1)");
+    await page.click("#lib-body .song-row:nth-child(3)");
+    await page.waitForTimeout(150);
+    await page.click("#bulk-edit");
+    await page.waitForTimeout(300);
+    await page.fill("#ef-album", "Tape 2020");
+    await page.click("#ef-save");
+    await page.waitForTimeout(600);
+    const mixed = await page.evaluate(() => Lyra.app.tracks
+      .slice()
+      .sort((a, b) => a.title.localeCompare(b.title))
+      .map((t) => ({ title: t.title, artist: t.artist, album: t.album, albumManual: !!t.albumManual })));
+    const withAlbum = mixed.filter((t) => t.album === "Tape 2020");
+    assert.equal(withAlbum.length, 2, "only the two chosen songs got the album: " + JSON.stringify(mixed));
+    assert.deepEqual(mixed.map((t) => t.artist), ["YFG Fatso", "YFG Fatso", "YFG Fatso"], "artists were not blanked");
+    assert.equal(mixed.find((t) => t.album === "").albumManual, false);
+
+    const groups = await page.evaluate(async () => {
+      Lyra.app.go("library");
+      await new Promise((r) => setTimeout(r, 250));
+      document.querySelector('#view [data-libfilter="artists"]').click();
+      await new Promise((r) => setTimeout(r, 250));
+      return [...document.querySelectorAll('.screen-host[data-screen="library"] .sheet-item')]
+        .map((b) => b.textContent.replace(/\s+/g, " ").trim());
+    });
+    assert.equal(groups.length, 1, "one artist group now: " + groups.join(" | "));
+    assert.match(groups[0], /YFG Fatso3 songs/);
+    await page.evaluate(async () => {
+      document.querySelector('#view [data-libfilter="songs"]').click();
+      await new Promise((r) => setTimeout(r, 200));
+    });
+  });
+
   await check("tapping a song row starts it right away", async () => {
     await page.evaluate(() => Lyra.app.go("library"));
     await page.waitForTimeout(200);
