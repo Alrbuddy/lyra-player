@@ -607,6 +607,7 @@ input[type="range"]::-webkit-slider-thumb {
 .toast {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: calc(var(--bar-bottom) + var(--nav-h) + var(--mini-h) + 40px + var(--vv-lift, 0px));
+  transition: bottom 0.22s var(--ease);
   background: var(--accent); color: #000; font-weight: 700; font-size: 14px;
   padding: 10px 18px; border-radius: 8px; z-index: 100;
   animation: fade-in 0.2s var(--ease); white-space: nowrap; max-width: 90vw;
@@ -623,6 +624,19 @@ input[type="range"]::-webkit-slider-thumb {
   bottom: calc(var(--bar-bottom) + var(--nav-h) + 20px + var(--vv-lift, 0px));
   z-index: 45; border-radius: var(--glass-radius);
   display: flex; align-items: center; gap: 7px; padding: 8px 10px 8px 14px;
+  transition: bottom 0.22s var(--ease);
+}
+/* With a song loaded the mini player already owns that gap, so the selection
+   bar rides above it instead of hiding its buttons behind it. */
+body.has-mini .bulk-bar {
+  bottom: calc(var(--bar-bottom) + var(--nav-h) + var(--nav-gap) + var(--mini-h) + 14px + var(--vv-lift, 0px));
+}
+/* While a selection is up the toast rises clear of its buttons. */
+body.has-bulk .toast {
+  bottom: calc(var(--bar-bottom) + var(--nav-h) + 84px + var(--vv-lift, 0px));
+}
+body.has-bulk.has-mini .toast {
+  bottom: calc(var(--bar-bottom) + var(--nav-h) + var(--nav-gap) + var(--mini-h) + 78px + var(--vv-lift, 0px));
 }
 .bulk-bar span { flex: 1; font-weight: 700; font-size: 14px; min-width: 0; }
 .bulk-bar .btn { padding: 9px 11px; font-size: 13px; min-height: 38px; min-width: 0; white-space: nowrap; }

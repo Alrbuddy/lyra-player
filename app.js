@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.19";
+  const APP_VERSION = "1.4.20";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -370,6 +370,9 @@
     applyChrome();
     shell.scrollTop = restore;
     if (kept != null) scrollByView[key] = restore;
+    // A selection bar is tall, and a toast must land above it rather than on
+    // top of its buttons.
+    document.body.classList.toggle("has-bulk", !!(selecting || plSelecting));
     // Local updates (a checkbox, a saved edit) and player-driven redraws must
     // not replay the entrance: only an actual screen entry animates.
     if (!opts.keep && !opts.quiet) playScreenIn(host, opts.rows === true);
@@ -1570,9 +1573,13 @@
     const t = st.track;
     if (!t) {
       mini.classList.add("hidden");
+      document.body.classList.remove("has-mini");
       return;
     }
     mini.classList.remove("hidden");
+    // Tells the selection bar (and anything else floating above the tab bar)
+    // that the mini player is on screen and needs the room.
+    document.body.classList.add("has-mini");
     $("#mini-art").innerHTML = artHTML(t, "width:40px;height:40px");
     $("#mini-title").textContent = t.title;
     $("#mini-artist").textContent = t.artist;

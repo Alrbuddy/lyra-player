@@ -1093,6 +1093,75 @@ async function dragTouch(page, fromY, toY) {
     });
   });
 
+  await check("the selection bar clears the mini player, with hittable buttons", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      await Lyra.player.playQueue([Lyra.app.tracks[0].id], 0);
+      await new Promise((r) => setTimeout(r, 350));
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(300);
+    await page.click("#lib-select");
+    await page.waitForTimeout(250);
+    await page.click("#lib-body .song-row");
+    await page.waitForTimeout(250);
+
+    const geo = await page.evaluate(() => {
+      const bar = document.querySelector(".bulk-bar");
+      const mini = document.getElementById("mini");
+      const b = bar.getBoundingClientRect();
+      const m = mini.getBoundingClientRect();
+      const hit = (el) => {
+        const r = el.getBoundingClientRect();
+        const node = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return {
+          inside: !!(node && (node === el || el.contains(node))),
+          got: node ? (node.id || node.className) : "nothing",
+          w: Math.round(r.width), h: Math.round(r.height),
+        };
+      };
+      return {
+        hasMini: document.body.classList.contains("has-mini"),
+        miniHidden: mini.classList.contains("hidden"),
+        barTop: Math.round(b.top), barBottom: Math.round(b.bottom),
+        miniTop: Math.round(m.top), vh: window.innerHeight,
+        add: hit(document.getElementById("bulk-add")),
+        edit: hit(document.getElementById("bulk-edit")),
+        del: hit(document.getElementById("bulk-del")),
+        navTop: Math.round(document.querySelector(".nav").getBoundingClientRect().top),
+      };
+    });
+    assert.equal(geo.hasMini, true, "the app knows the mini player is on screen");
+    assert.equal(geo.miniHidden, false, "it really is");
+    assert.ok(geo.barBottom <= geo.miniTop - 4,
+      "the bar sits above the mini player (bar bottom " + geo.barBottom + ", mini top " + geo.miniTop + ")");
+    assert.ok(geo.barTop > 0, "and on screen (top " + geo.barTop + ")");
+    assert.equal(geo.navTop > geo.miniTop, true, "mini is above the tab bar");
+    assert.equal(geo.add.inside, true, "Add is tappable, hit " + geo.add.got);
+    assert.equal(geo.edit.inside, true, "Edit is tappable, hit " + geo.edit.got);
+    assert.equal(geo.del.inside, true, "Delete is tappable, hit " + geo.del.got);
+    assert.ok(geo.add.w >= 40 && geo.del.w >= 40, "the buttons keep a real hit area");
+
+    // Stop the player: the bar drops back down to the tab bar gap.
+    await page.evaluate(() => Lyra.player.stop());
+    await page.waitForTimeout(300);
+    const after = await page.evaluate(() => ({
+      hasMini: document.body.classList.contains("has-mini"),
+      miniHidden: document.getElementById("mini").classList.contains("hidden"),
+      barBottom: Math.round(document.querySelector(".bulk-bar").getBoundingClientRect().bottom),
+      navTop: Math.round(document.querySelector(".nav").getBoundingClientRect().top),
+    }));
+    assert.equal(after.hasMini, false, "no mini player, no reserved room");
+    assert.equal(after.miniHidden, true);
+    assert.ok(after.barBottom <= after.navTop, "the bar still stays above the tab bar");
+    assert.ok(after.barBottom > geo.barBottom - 60, "and drops back into the gap");
+
+    await page.evaluate(async () => {
+      document.getElementById("lib-select").click();
+      await new Promise((r) => setTimeout(r, 200));
+    });
+  });
+
   await check("the selection's Edit button sets the artist and album for many songs", async () => {
     await seed(page, null);
     await page.evaluate(async () => {
