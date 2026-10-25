@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.10";
+  const APP_VERSION = "1.4.11";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -1424,7 +1424,15 @@
     renderSleepBadge();
     renderNpTrimZone();
     window.Lyra.lyricsSync?.mountNp();
-    if (route.view === "detail") updateDetailPlayButton();
+    if (route.view === "detail") {
+      updateDetailPlayButton();
+      // The green "now playing" row and its level meter have to move with the
+      // player, or an album page keeps pointing at the song you left behind.
+      if (lastUiTrackId !== t.id) {
+        lastUiTrackId = t.id;
+        render();
+      }
+    }
     // Re-render the song list only when the song itself changed — play/pause
     // used to rebuild every row, which made the whole app feel sticky.
     if (route.view === "library" && libFilter === "songs" && lastUiTrackId !== t.id) {
@@ -2142,9 +2150,13 @@
       const playBtn = $("#detail-play");
       if (playBtn && d) playBtn.onclick = () => {
         if (!d.list.length) return;
+        const st = player.state();
         // Already playing this collection: the big button is a pause button.
-        if (sameCollection(player.state(), d.list)) { player.toggle(); return; }
-        playList(d.list, d.list[0].id, d.title);
+        if (sameCollection(st, d.list)) { player.toggle(); return; }
+        // Start from the song that is loaded when it belongs here, so pressing
+        // play on the artist you are listening to does not jump to another one.
+        const here = st.track && d.list.some((t) => t.id === st.track.id) ? st.track.id : null;
+        playList(d.list, here || d.list[0].id, d.title);
       };
       updateDetailPlayButton();
       const shBtn = $("#detail-shuffle");

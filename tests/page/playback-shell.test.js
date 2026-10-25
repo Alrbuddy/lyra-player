@@ -712,6 +712,81 @@ async function dragTouch(page, fromY, toY) {
     await page.waitForTimeout(150);
   });
 
+  await check("pressing play on the artist you are listening to keeps that song", async () => {
+    await seed(page, null);
+    const ids = await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      const newer = await Lyra.db.addTrack({
+        title: "Newer Song", artist: "Shared Artist", album: "", duration: 100,
+        audio: base.audio, addedAt: Date.now() + 20, plays: 0, liked: false, lyrics: "",
+      });
+      base.artist = "Shared Artist";
+      await Lyra.db.putTrack(base);
+      const outsider = await Lyra.db.addTrack({
+        title: "Outsider", artist: "Other Artist", album: "", duration: 100,
+        audio: base.audio, addedAt: Date.now() + 10, plays: 0, liked: false, lyrics: "",
+      });
+      await Lyra.app.refreshData();
+      return { base: base.id, newer, outsider };
+    });
+    // Playing from the library: the queue is the whole library, so it is not
+    // "this artist's collection" even though the song belongs to the artist.
+    await page.evaluate((ids) => Lyra.player.playQueue([ids.newer, ids.base, ids.outsider], 0), ids);
+    await page.waitForTimeout(400);
+    await page.evaluate(() => Lyra.player.seek(3));
+    await page.waitForTimeout(200);
+    const artistTitle = await page.evaluate((id) => Lyra.app.tracks.find((t) => t.id === id).title, ids.newer);
+    await page.evaluate(() => Lyra.app.go("detail", { kind: "artist", name: "Shared Artist" }, false));
+    await page.waitForTimeout(350);
+    const before = await page.evaluate(() => ({
+      rows: document.querySelectorAll("#detail-rows [data-play-track]").length,
+      playingRow: (document.querySelector("#detail-rows .song-title.playing") || {}).textContent,
+      aria: document.querySelector("#detail-play").getAttribute("aria-label"),
+    }));
+    assert.equal(before.rows, 2, "the artist page lists both songs");
+    const order = await page.evaluate(() => [...document.querySelectorAll("#detail-rows .song-title")].map((n) => n.textContent));
+    assert.equal(order[0], "Shell Fixture Song With A Very Long Title To Check Nothing Overflows The Screen",
+      "the page starts with the other song, so playing it would be a jump: " + order.join(" | "));
+    await page.click("#detail-play");
+    await page.waitForTimeout(600);
+    const after = await page.evaluate(() => ({
+      id: Lyra.player.state().track.id,
+      title: Lyra.player.state().track.title,
+      playing: Lyra.player.state().playing,
+      row: (document.querySelector("#detail-rows .song-title.playing") || {}).textContent,
+      eqRows: document.querySelectorAll("#detail-rows .eq").length,
+    }));
+    assert.equal(after.id, ids.newer, "it kept the song that was loaded, not the first one listed (" + after.title + ")");
+    assert.equal(after.playing, true);
+    assert.equal(after.row, artistTitle, "the playing row follows the player");
+    assert.equal(after.eqRows, 1, "exactly one row shows the level meter");
+    await page.click("#detail-play");
+    await page.waitForTimeout(250);
+    await page.evaluate(() => Lyra.app.go("library"));
+    await page.waitForTimeout(250);
+  });
+
+  await check("the artist page moves its now-playing marker with the player", async () => {
+    await page.evaluate(() => Lyra.app.go("detail", { kind: "artist", name: "Shared Artist" }, false));
+    await page.waitForTimeout(350);
+    const rows = await page.evaluate(() => [...document.querySelectorAll("#detail-rows [data-play-track]")]
+      .map((r) => ({ id: Number(r.dataset.playTrack), title: r.querySelector(".song-title").textContent })));
+    const current = await page.evaluate(() => Lyra.player.state().track.id);
+    const target = rows.find((r) => r.id !== current);
+    await page.click(`#detail-rows [data-play-track="${target.id}"]`);
+    await page.waitForTimeout(700);
+    const after = await page.evaluate(() => ({
+      playing: Lyra.player.state().track.id,
+      marked: [...document.querySelectorAll("#detail-rows .song-title.playing")].map((n) => n.textContent),
+      eq: document.querySelectorAll("#detail-rows .eq").length,
+    }));
+    assert.equal(after.playing, target.id, "the tapped row started");
+    assert.deepEqual(after.marked, [target.title], "the green row followed the player");
+    assert.equal(after.eq, 1, "one level meter, on the right row");
+    await page.evaluate(() => Lyra.app.go("library"));
+    await page.waitForTimeout(250);
+  });
+
   await check("tapping a song row starts it right away", async () => {
     await page.evaluate(() => Lyra.app.go("library"));
     await page.waitForTimeout(200);
