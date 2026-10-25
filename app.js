@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.12";
+  const APP_VERSION = "1.4.13";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -521,19 +521,23 @@
           ${esc(a.name)}<span class="dim" style="margin-left:auto">${a.tracks.length} songs</span></button>`).join("");
     }
 
+    const none = selected.size === 0;
     const bulk = selecting
       ? `<div class="bulk-bar glass">
           <span id="bulk-count">${selected.size} selected</span>
-          <button class="btn ghost" id="bulk-add">Add to playlist</button>
-          <button class="btn danger" id="bulk-del">Delete</button>
+          <button class="btn ghost" id="bulk-add"${none ? " disabled" : ""}>Add to playlist</button>
+          <button class="btn danger" id="bulk-del"${none ? " disabled" : ""}>Delete</button>
         </div>` : "";
 
     return `<div class="screen">
       <div class="row-between">
-        <div style="display:flex;align-items:center;gap:10px">
-          <span class="avatar">L</span><h1 class="h-screen" style="margin:0">Your Library</h1>
+        <div style="display:flex;align-items:center;gap:10px;min-width:0">
+          <span class="avatar">L</span><h1 class="h-screen" style="margin:0;white-space:nowrap">Your Library</h1>
         </div>
-        <button class="icon-btn" id="lib-plus" aria-label="Add">${PLUS_SVG}</button>
+        <div style="display:flex;align-items:center;gap:6px;flex:none">
+          ${libFilter === "songs" ? `<button class="btn ghost lib-select-btn" id="lib-select">${selecting ? "Done" : "Select"}</button>` : ""}
+          <button class="icon-btn" id="lib-plus" aria-label="Add">${PLUS_SVG}</button>
+        </div>
       </div>
       <div class="chips">
         ${["songs", "playlists", "albums", "artists"].map((f) =>
@@ -544,7 +548,6 @@
           ? `<button class="chip" id="lib-sort" style="background:none;color:var(--text-dim);padding-left:0">${SORT_LABELS[libSort]} ▾</button>`
           : `<span></span>`}
         <div style="display:flex;gap:2px">
-          ${libFilter === "songs" ? `<button class="chip" id="lib-select">${selecting ? "Done" : "Select"}</button>` : ""}
           <button class="icon-btn" id="lib-toggle" aria-label="Toggle list or grid">
             <svg viewBox="0 0 24 24">${libGrid ? '<path d="M4 6h16M4 12h16M4 18h16"/>' : '<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/>'}</svg>
           </button>
@@ -1981,6 +1984,7 @@
           row.querySelector(".checkbox").classList.toggle("on", selected.has(id));
           const c = $("#bulk-count");
           if (c) c.textContent = selected.size + " selected";
+          [$("#bulk-add"), $("#bulk-del")].forEach((b) => { if (b) b.disabled = selected.size === 0; });
           return;
         }
         const container = row.closest("[data-detail-list]");

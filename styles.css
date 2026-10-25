@@ -601,6 +601,10 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 /* ---- Bulk select bar ---- */
+/* The way into multi-select, sitting next to + in the Library header. */
+.lib-select-btn { padding: 8px 14px; font-size: 13.5px; min-height: 34px; }
+.btn:disabled { opacity: 0.45; }
+
 .bulk-bar {
   position: fixed; left: 12px; right: 12px;
   bottom: calc(var(--bar-bottom) + var(--nav-h) + 20px + var(--vv-lift, 0px));

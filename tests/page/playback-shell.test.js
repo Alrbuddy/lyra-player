@@ -854,6 +854,87 @@ async function dragTouch(page, fromY, toY) {
     await page.waitForTimeout(250);
   });
 
+  await check("the Library Select button adds chosen songs to a playlist", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      await Lyra.db.addTrack({
+        title: "Second Pick", artist: base.artist, album: "", duration: 100,
+        audio: base.audio, addedAt: Date.now() + 5, plays: 0, liked: false, lyrics: "",
+      });
+      await Lyra.db.addPlaylist({ name: "Mix", trackIds: [] });
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(400);
+
+    const entry = await page.evaluate(() => {
+      const b = document.getElementById("lib-select");
+      const r = b.getBoundingClientRect();
+      const h1 = document.querySelector(".screen-host[data-screen='library'] .h-screen").getBoundingClientRect();
+      return { label: b.textContent, w: Math.round(r.width), h: Math.round(r.height), overlapsTitle: h1.right > r.left, right: Math.round(r.right) };
+    });
+    assert.equal(entry.label, "Select", "the library has a Select button");
+    assert.ok(entry.w >= 50 && entry.h >= 30, "it is a real button, got " + entry.w + "x" + entry.h);
+    assert.equal(entry.overlapsTitle, false, "it does not run into the title");
+    assert.ok(entry.right <= 390, "it fits on a 390px screen");
+
+    await page.click("#lib-select");
+    await page.waitForTimeout(250);
+    const started = await page.evaluate(() => ({
+      label: document.getElementById("lib-select").textContent,
+      bar: !!document.querySelector(".bulk-bar"),
+      addDisabled: document.getElementById("bulk-add").disabled,
+      delDisabled: document.getElementById("bulk-del").disabled,
+      barBottom: Math.round(document.querySelector(".bulk-bar").getBoundingClientRect().bottom),
+      navTop: Math.round(document.querySelector(".nav").getBoundingClientRect().top),
+    }));
+    assert.equal(started.label, "Done", "the button turns into Done");
+    assert.equal(started.bar, true, "the selection bar appears");
+    assert.equal(started.addDisabled, true, "Add is disabled with nothing selected");
+    assert.equal(started.delDisabled, true, "Delete too");
+    assert.ok(started.barBottom <= started.navTop, "the bar sits above the tab bar");
+
+    const before = await page.evaluate(() => Lyra.player.state().track && Lyra.player.state().track.id);
+    await page.click("#lib-body .song-row:nth-child(1)");
+    await page.click("#lib-body .song-row:nth-child(2)");
+    await page.waitForTimeout(200);
+    const picked = await page.evaluate((before) => ({
+      count: document.getElementById("bulk-count").textContent,
+      checks: document.querySelectorAll("#lib-body .checkbox.on").length,
+      addDisabled: document.getElementById("bulk-add").disabled,
+      changed: (Lyra.player.state().track && Lyra.player.state().track.id) !== before,
+    }), before);
+    assert.equal(picked.count, "2 selected");
+    assert.equal(picked.checks, 2);
+    assert.equal(picked.addDisabled, false, "Add wakes up once songs are chosen");
+    assert.equal(picked.changed, false, "choosing songs does not start playback");
+
+    await page.click("#bulk-add");
+    await page.waitForTimeout(350);
+    const sheet = await page.evaluate(() => {
+      const target = [...document.querySelectorAll("#sheet [data-pl]")].find((b) => /Mix/.test(b.textContent));
+      return { open: !!target, value: target ? target.dataset.pl : null };
+    });
+    assert.equal(sheet.open, true, "the playlist sheet lists the playlist");
+    await page.evaluate((value) => document.querySelector(`#sheet [data-pl="${value}"]`).click(), sheet.value);
+    await page.waitForTimeout(600);
+    const done = await page.evaluate(async () => {
+      const pls = await Lyra.db.getAllPlaylists();
+      const mix = pls.find((p) => p.name === "Mix");
+      return {
+        count: mix ? mix.trackIds.length : -1,
+        titles: mix ? mix.trackIds.map((id) => (Lyra.app.tracks.find((t) => t.id === id) || {}).title) : [],
+        bar: !!document.querySelector(".bulk-bar"),
+        label: document.getElementById("lib-select").textContent,
+      };
+    });
+    assert.equal(done.count, 2, "both chosen songs are in the playlist");
+    assert.deepEqual(done.titles.sort(), ["Second Pick", "Shell Fixture Song With A Very Long Title To Check Nothing Overflows The Screen"].sort());
+    assert.equal(done.bar, false, "selection mode closed itself");
+    assert.equal(done.label, "Select");
+  });
+
   await check("tapping a song row starts it right away", async () => {
     await page.evaluate(() => Lyra.app.go("library"));
     await page.waitForTimeout(200);
