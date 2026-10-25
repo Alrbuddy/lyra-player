@@ -940,6 +940,159 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(done.label, "Select");
   });
 
+  await check("holding a playlist offers to delete it, and a plain tap still opens it", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      for (const name of ["Keep Me", "Hold Me"]) {
+        await Lyra.db.addPlaylist({ name, trackIds: [base.id], createdAt: Date.now() });
+      }
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(300);
+    await page.click('#view [data-libfilter="playlists"]');
+    await page.waitForTimeout(250);
+
+    // A normal tap opens the playlist.
+    await page.evaluate(() =>
+      [...document.querySelectorAll("#lib-body [data-detail-kind='playlist']")]
+        .find((b) => /Keep Me/.test(b.textContent)).click());
+    await page.waitForTimeout(300);
+    const opened = await page.evaluate(() =>
+      [...document.querySelectorAll(".screen-host")].filter((h) => !h.hidden).map((h) => h.dataset.screen));
+    assert.deepEqual(opened, ["detail"], "a tap opens the playlist");
+
+    await page.evaluate(() => Lyra.app.go("library"));
+    await page.waitForTimeout(250);
+    await page.click('#view [data-libfilter="playlists"]');
+    await page.waitForTimeout(250);
+
+    // Hold the other one: the sheet appears, and the click after the hold is
+    // swallowed instead of opening the playlist.
+    const held = await page.evaluate(async () => {
+      const tile = [...document.querySelectorAll("#lib-body [data-hold-pl]")]
+        .find((b) => /Hold Me/.test(b.textContent));
+      const fire = (type) => tile.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+      tile.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 40, clientY: 300, button: 0 }));
+      await new Promise((r) => setTimeout(r, 700));
+      tile.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 40, clientY: 300 }));
+      fire("click");
+      await new Promise((r) => setTimeout(r, 250));
+      const sheet = document.getElementById("sheet");
+      return {
+        sheetOpen: !sheet.classList.contains("hidden"),
+        title: sheet.querySelector(".sheet-title")?.textContent || "",
+        body: sheet.innerText,
+        shown: [...document.querySelectorAll(".screen-host")].filter((h) => !h.hidden).map((h) => h.dataset.screen),
+      };
+    });
+    assert.equal(held.sheetOpen, true, "holding a playlist opens the delete sheet");
+    assert.match(held.title, /Delete playlist/i);
+    assert.match(held.body, /Hold Me/);
+    assert.deepEqual(held.shown, ["library"], "and it did not also open the playlist");
+
+    await page.click("#sh-ok");
+    await page.waitForTimeout(500);
+    const after = await page.evaluate(async () => {
+      const pls = await Lyra.db.getAllPlaylists();
+      return {
+        names: pls.map((p) => p.name).sort(),
+        songs: Lyra.app.tracks.length,
+        shown: [...document.querySelectorAll(".screen-host")].filter((h) => !h.hidden).map((h) => h.dataset.screen),
+      };
+    });
+    assert.deepEqual(after.names, ["Keep Me"], "only the held playlist was deleted");
+    assert.equal(after.songs, 1, "its song is untouched");
+    assert.deepEqual(after.shown, ["library"], "the library is still on screen");
+    // Back to the Songs tab for the checks that follow.
+    await page.evaluate(async () => {
+      document.querySelector('#view [data-libfilter="songs"]').click();
+      await new Promise((r) => setTimeout(r, 200));
+    });
+  });
+
+  await check("Select on the Playlists tab deletes several at once", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      for (const name of ["Alpha List", "Beta List", "Gamma List"]) {
+        await Lyra.db.addPlaylist({ name, trackIds: [base.id], createdAt: Date.now() });
+      }
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(300);
+    await page.click('#view [data-libfilter="playlists"]');
+    await page.waitForTimeout(250);
+
+    const start = await page.evaluate(() => {
+      document.getElementById("lib-select").click();
+      return true;
+    });
+    assert.equal(start, true);
+    await page.waitForTimeout(300);
+    const entering = await page.evaluate(() => {
+      const bar = document.querySelector(".bulk-bar");
+      return {
+        label: document.getElementById("lib-select").textContent,
+        bar: !!bar,
+        watched: bar ? bar.querySelectorAll(".btn").length : 0,
+        delDisabled: document.getElementById("bulk-pl-del").disabled,
+        checks: document.querySelectorAll("#lib-body .checkbox").length,
+      };
+    });
+    assert.equal(entering.label, "Done", "the button turns into Done");
+    assert.equal(entering.bar, true, "a selection bar appears");
+    assert.equal(entering.watched, 1, "it offers just Delete for playlists");
+    assert.equal(entering.delDisabled, true, "Delete is disabled with nothing chosen");
+    assert.equal(entering.checks, 3, "every playlist gets a checkbox");
+
+    await page.evaluate(() => {
+      const tiles = [...document.querySelectorAll("#lib-body [data-pl-tile]")];
+      tiles.find((b) => /Alpha List/.test(b.textContent)).click();
+      tiles.find((b) => /Beta List/.test(b.textContent)).click();
+    });
+    await page.waitForTimeout(300);
+    const chosen = await page.evaluate(() => ({
+      count: document.getElementById("bulk-count").textContent,
+      checks: document.querySelectorAll("#lib-body .checkbox.on").length,
+      delDisabled: document.getElementById("bulk-pl-del").disabled,
+      shown: [...document.querySelectorAll(".screen-host")].filter((h) => !h.hidden).map((h) => h.dataset.screen),
+    }));
+    assert.equal(chosen.count, "2 selected");
+    assert.equal(chosen.checks, 2);
+    assert.equal(chosen.delDisabled, false);
+    assert.deepEqual(chosen.shown, ["library"], "choosing a playlist does not open it");
+
+    await page.click("#bulk-pl-del");
+    await page.waitForTimeout(300);
+    const asked = await page.evaluate(() => document.getElementById("sheet").innerText);
+    assert.match(asked, /Delete 2 playlists/);
+    await page.click("#sh-ok");
+    await page.waitForTimeout(500);
+    const done = await page.evaluate(async () => {
+      const pls = await Lyra.db.getAllPlaylists();
+      return {
+        names: pls.map((p) => p.name).sort(),
+        tracksLeft: pls.reduce((n, p) => n + p.trackIds.length, 0),
+        bar: !!document.querySelector(".bulk-bar"),
+        label: document.getElementById("lib-select").textContent,
+        songs: Lyra.app.tracks.length,
+      };
+    });
+    assert.deepEqual(done.names, ["Gamma List"], "the two chosen playlists are gone");
+    assert.equal(done.tracksLeft, 1, "the untouched playlist still holds its song");
+    assert.equal(done.songs, 1, "the song itself was not deleted");
+    assert.equal(done.bar, false, "selection closed after deleting");
+    assert.equal(done.label, "Select");
+    // Back to the Songs tab for the checks that follow.
+    await page.evaluate(async () => {
+      document.querySelector('#view [data-libfilter="songs"]').click();
+      await new Promise((r) => setTimeout(r, 200));
+    });
+  });
+
   await check("the selection's Edit button sets the artist and album for many songs", async () => {
     await seed(page, null);
     await page.evaluate(async () => {

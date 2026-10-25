@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.16";
+  const APP_VERSION = "1.4.17";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -457,6 +457,9 @@
   let libGrid = false;
   let selecting = false;
   let selected = new Set();
+  // Playlists have their own selection so choosing songs never mixes with them.
+  let plSelecting = false;
+  let plSelected = new Set();
   let libSort = "recent"; // recent | title | artist | plays
   const SORT_LABELS = { recent: "Recents", title: "Title A–Z", artist: "Artist A–Z", plays: "Most played" };
 
@@ -507,13 +510,21 @@
         ? list.map((t) => songRow(t, { selecting, selected })).join("")
         : `<div class="empty"><div class="big">No songs yet</div><div class="small">Import some music first.</div></div>`;
     } else if (libFilter === "playlists") {
+      const tiles = playlists.map((p) => {
+        const cover = tracks.find((t) => p.trackIds.includes(t.id) && t.art);
+        const on = plSelected.has(p.id);
+        // While selecting, a tile is a checkbox instead of a link; otherwise it
+        // opens the playlist and a long press offers to delete it.
+        const attrs = plSelecting
+          ? `data-pl-tile="${p.id}"`
+          : `data-detail-kind="playlist" data-detail-val="${p.id}" data-hold-pl="${p.id}"`;
+        return `<button class="tile press" style="width:100%;margin-bottom:8px" ${attrs}>
+          ${plSelecting ? `<span class="checkbox${on ? " on" : ""}" style="margin-left:12px"></span>` : ""}
+          ${cover ? artHTML(cover, "width:56px;height:56px;border-radius:8px 0 0 8px") : `<div class="art-ph" style="width:56px;height:56px;border-radius:8px 0 0 8px">${NOTE_SVG}</div>`}
+          <span class="tile-name">${esc(p.name)}</span><span class="dim" style="margin-left:auto;padding-right:10px;font-weight:400">${p.trackIds.length} songs</span></button>`;
+      }).join("");
       body = `<button class="tile" style="width:100%;margin-bottom:8px" data-detail-kind="liked" data-detail-val="">${likedTile()}<span class="tile-name">Liked Songs</span></button>` +
-        playlists.map((p) => {
-          const cover = tracks.find((t) => p.trackIds.includes(t.id) && t.art);
-          return `<button class="tile" style="width:100%;margin-bottom:8px" data-detail-kind="playlist" data-detail-val="${p.id}">
-            ${cover ? artHTML(cover, "width:56px;height:56px;border-radius:8px 0 0 8px") : `<div class="art-ph" style="width:56px;height:56px;border-radius:8px 0 0 8px">${NOTE_SVG}</div>`}
-            <span class="tile-name">${esc(p.name)}</span><span class="dim" style="margin-left:auto;padding-right:10px;font-weight:400">${p.trackIds.length} songs</span></button>`;
-        }).join("") || `<div class="empty"><div class="big">No playlists</div><div class="small">Tap + to create one.</div></div>`;
+        (tiles || `<div class="empty"><div class="big">No playlists</div><div class="small">Tap + to create one.</div></div>`);
     } else if (libFilter === "albums") {
       const albs = albumsOf(tracks);
       body = `<div class="browse">` + albs.map((a) => {
@@ -532,7 +543,13 @@
     }
 
     const none = selected.size === 0;
-    const bulk = selecting
+    const bulk = libFilter === "playlists"
+      ? (plSelecting
+        ? `<div class="bulk-bar glass">
+            <span id="bulk-count">${plSelected.size} selected</span>
+            <button class="btn danger" id="bulk-pl-del"${plSelected.size ? "" : " disabled"}>Delete</button>
+          </div>` : "")
+      : selecting
       ? `<div class="bulk-bar glass">
           <span id="bulk-count">${selected.size} selected</span>
           <button class="btn ghost" id="bulk-add"${none ? " disabled" : ""}>Add to playlist</button>
@@ -546,7 +563,8 @@
           <span class="avatar">L</span><h1 class="h-screen" style="margin:0;white-space:nowrap">Your Library</h1>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex:none">
-          ${libFilter === "songs" ? `<button class="btn ghost lib-select-btn" id="lib-select">${selecting ? "Done" : "Select"}</button>` : ""}
+          ${libFilter === "songs" || libFilter === "playlists"
+            ? `<button class="btn ghost lib-select-btn" id="lib-select">${(libFilter === "songs" ? selecting : plSelecting) ? "Done" : "Select"}</button>` : ""}
           <button class="icon-btn" id="lib-plus" aria-label="Add">${PLUS_SVG}</button>
         </div>
       </div>
@@ -1181,6 +1199,59 @@
     const id = await db.addPlaylist({ name, trackIds: ids || [], createdAt: Date.now() });
     await refreshData();
     return id;
+  }
+
+  // Remove one playlist (held on its tile) or a whole selection. The songs are
+  // never touched: a playlist is only a list of ids.
+  async function deletePlaylistsSheet(target) {
+    const ids = (Array.isArray(target) ? target : [target]).map(Number).filter((n) => !isNaN(n));
+    const list = playlists.filter((p) => ids.includes(p.id));
+    if (!list.length) return;
+    const one = list.length === 1;
+    const ok = await confirmSheet(
+      one ? "Delete playlist" : `Delete ${list.length} playlists`,
+      one
+        ? `“${list[0].name}” will be removed. The songs stay in your library.`
+        : `${list.length} playlists will be removed. The songs stay in your library.`,
+      "Delete", true
+    );
+    if (!ok) return;
+    for (const p of list) await db.deletePlaylist(p.id);
+    plSelecting = false;
+    plSelected.clear();
+    // The open page may be the playlist that just went away.
+    const openOne = route.view === "detail" && route.params.kind === "playlist" &&
+      list.some((p) => p.id === Number(route.params.id));
+    await refreshData();
+    if (openOne) { back(); return; }
+    render({ keep: true });
+    toast(one ? "Playlist deleted" : `${list.length} playlists deleted`);
+  }
+
+  // Hold-to-act: a press that lasts HOLD_MS fires without waiting for the
+  // release. The click that follows is swallowed by holdSuppress so the tile
+  // does not also open, and sliding the finger cancels it (that is a scroll).
+  const HOLD_MS = 550;
+  let holdSuppress = 0;
+  function bindHold(el, onHold) {
+    let timer = 0, x0 = 0, y0 = 0;
+    const clear = () => { if (timer) { clearTimeout(timer); timer = 0; } };
+    el.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      clear();
+      x0 = e.clientX; y0 = e.clientY;
+      timer = setTimeout(() => {
+        timer = 0;
+        holdSuppress = Date.now() + 800;
+        onHold();
+      }, HOLD_MS);
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (timer && (Math.abs(e.clientX - x0) > 9 || Math.abs(e.clientY - y0) > 9)) clear();
+    }, { passive: true });
+    el.addEventListener("pointerup", clear);
+    el.addEventListener("pointercancel", clear);
+    el.addEventListener("pointerleave", clear);
   }
 
   async function addToPlaylistSheet(ids) {
@@ -2009,8 +2080,10 @@
 
     v.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => go(b.dataset.go, {}, b.dataset.go !== "settings")));
     v.querySelectorAll("[data-back]").forEach((b) => (b.onclick = back));
-    v.querySelectorAll("[data-detail-kind]").forEach((b) => (b.onclick = () =>
-      go("detail", { kind: b.dataset.detailKind, id: b.dataset.detailVal, name: b.dataset.detailVal })));
+    v.querySelectorAll("[data-detail-kind]").forEach((b) => (b.onclick = () => {
+      if (Date.now() < holdSuppress) return; // the press was a hold, not a tap
+      go("detail", { kind: b.dataset.detailKind, id: b.dataset.detailVal, name: b.dataset.detailVal });
+    }));
     v.querySelectorAll("[data-browse]").forEach((b) => (b.onclick = () =>
       go("detail", { kind: "browse", name: b.dataset.browse })));
 
@@ -2091,10 +2164,28 @@
 
     if (view === "library") {
       v.querySelectorAll("[data-libfilter]").forEach((c) => (c.onclick = () => {
-        libFilter = c.dataset.libfilter; selecting = false; selected.clear(); render({ top: true });
+        libFilter = c.dataset.libfilter;
+        selecting = false; selected.clear();
+        plSelecting = false; plSelected.clear();
+        render({ top: true });
       }));
       const sel = $("#lib-select");
-      if (sel) sel.onclick = () => { selecting = !selecting; selected.clear(); render({ top: true }); };
+      if (sel) sel.onclick = () => {
+        if (libFilter === "playlists") { plSelecting = !plSelecting; plSelected.clear(); }
+        else { selecting = !selecting; selected.clear(); }
+        render({ top: true });
+      };
+      // Tapping a playlist while selecting chooses it instead of opening it.
+      v.querySelectorAll("[data-pl-tile]").forEach((b) => (b.onclick = () => {
+        const id = Number(b.dataset.plTile);
+        if (plSelected.has(id)) plSelected.delete(id); else plSelected.add(id);
+        render({ keep: true });
+      }));
+      // Hold a playlist to delete it; a normal tap still opens it.
+      v.querySelectorAll("[data-hold-pl]").forEach((b) =>
+        bindHold(b, () => deletePlaylistsSheet(Number(b.dataset.holdPl))));
+      const bulkPlDel = $("#bulk-pl-del");
+      if (bulkPlDel) bulkPlDel.onclick = () => deletePlaylistsSheet([...plSelected]);
       const sortBtn = $("#lib-sort");
       if (sortBtn) sortBtn.onclick = openSortSheet;
       const az = $("#az-strip");

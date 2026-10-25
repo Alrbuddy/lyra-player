@@ -141,6 +141,7 @@ input, textarea { user-select: text; -webkit-user-select: text; font: inherit; }
   background: var(--surface3); border-radius: var(--radius-sm); overflow: hidden;
   font-weight: 700; font-size: 13.5px; text-align: left; padding: 0 10px 0 0;
   transition: transform 0.18s var(--spring), background 0.15s;
+  -webkit-touch-callout: none;
 }
 .tile:active { transform: scale(0.97); background: #333; }
 .tile .art, .tile .art-ph { width: 56px; height: 56px; flex: none; border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
