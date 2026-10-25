@@ -1900,6 +1900,91 @@ async function dragTouch(page, fromY, toY) {
     assert.ok(out.stages.includes("uploading"), "progress stages still reported");
   });
 
+  await check("the Library header with Select stays pinned while the list scrolls", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      for (let i = 0; i < 24; i++) {
+        await Lyra.db.addTrack({
+          title: "Pinned Row " + i, artist: "Fixture Artist", album: "", duration: 100,
+          audio: base.audio, addedAt: Date.now() + i + 1, plays: 0, liked: false, lyrics: "",
+        });
+      }
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(400);
+    const out = await page.evaluate(async () => {
+      const shell = document.getElementById("view");
+      const btn = document.getElementById("lib-select");
+      const restTop = btn.getBoundingClientRect().top;
+      shell.scrollTop = 700;
+      await new Promise((r) => setTimeout(r, 250));
+      const r = btn.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return {
+        restTop: Math.round(restTop),
+        pinnedTop: Math.round(r.top),
+        scrollTop: shell.scrollTop,
+        onScreen: r.top >= 0 && r.bottom <= window.innerHeight,
+        insideWidth: r.left >= 0 && r.right <= window.innerWidth,
+        hit: hit ? (hit.id || hit.className || hit.tagName) : "nothing",
+        inside: !!(hit && (hit === btn || btn.contains(hit))),
+        label: btn.textContent,
+      };
+    });
+    assert.ok(out.scrollTop > 600, "the list really scrolled (" + out.scrollTop + ")");
+    assert.equal(out.onScreen, true, "Select is still on screen");
+    assert.equal(out.insideWidth, true, "and fully on the screen sideways");
+    assert.ok(out.pinnedTop < 140, "pinned near the top edge, got " + out.pinnedTop);
+    assert.equal(out.inside, true, "a tap there lands on Select, got " + out.hit);
+    assert.equal(out.label, "Select");
+  });
+
+  await check("skipping a song on a playlist page scrolls to the new row", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      const ids = [base.id];
+      for (let i = 0; i < 18; i++) {
+        ids.push(await Lyra.db.addTrack({
+          title: "Long Row " + i, artist: "Fixture Artist", album: "", duration: 100,
+          audio: base.audio, addedAt: Date.now() + i + 1, plays: 0, liked: false, lyrics: "",
+        }));
+      }
+      await Lyra.db.addPlaylist({ name: "Long List", trackIds: ids, createdAt: Date.now() });
+      await Lyra.app.refreshData();
+      const pl = Lyra.app.playlists.find((p) => p.name === "Long List");
+      await Lyra.player.playQueue(ids, 0);
+      Lyra.app.go("detail", { kind: "playlist", id: pl.id }, false);
+    });
+    await page.waitForTimeout(500);
+    const out = await page.evaluate(async () => {
+      const shell = document.getElementById("view");
+      const before = shell.scrollTop;
+      for (let i = 0; i < 16; i++) {
+        await Lyra.player.next(true);
+        await new Promise((r) => setTimeout(r, 180));
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+      const cur = Lyra.player.state().track;
+      const row = document.querySelector(`#detail-rows [data-play-track="${cur.id}"]`);
+      const r = row.getBoundingClientRect();
+      return {
+        before, after: shell.scrollTop, title: cur.title,
+        rowTop: Math.round(r.top), rowBottom: Math.round(r.bottom), vh: window.innerHeight,
+        marked: [...document.querySelectorAll("#detail-rows .song-title.playing")].map((n) => n.textContent),
+        rows: document.querySelectorAll("#detail-rows .song-row").length,
+      };
+    });
+    assert.equal(out.before, 0, "the page started at the top");
+    assert.ok(out.rows >= 19, "the playlist page is long: " + out.rows);
+    assert.ok(out.after > 80, "it scrolled down to the playing row (0 -> " + Math.round(out.after) + ")");
+    assert.ok(out.rowTop >= 0 && out.rowBottom <= out.vh,
+      "the row is on screen (" + out.rowTop + "-" + out.rowBottom + " of " + out.vh + ")");
+    assert.deepEqual(out.marked, [out.title], "and it is the marked row");
+  });
+
   console.log("\nNever played, mini drag and back swipe");
   await check("a song that merely started leaves 'Never played'", async () => {
     await seed(page, null);

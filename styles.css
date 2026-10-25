@@ -751,6 +751,23 @@ body.has-bulk.has-mini .toast {
 @keyframes tab-pop { 0% { transform: scale(0.82); } 55% { transform: scale(1.1); } 100% { transform: scale(1); } }
 @keyframes check-pop { from { transform: scale(0.6); opacity: 0.4; } }
 
+/* The Library header rides along as the list scrolls, so Select (and +) are
+   always one tap away instead of a scroll back to the top. It pins just below
+   the status bar, and a short fade under it keeps rows from meeting it hard. */
+.lib-head {
+  position: sticky;
+  top: calc(env(safe-area-inset-top, 0px) + 4px);
+  z-index: 12;
+  background: var(--bg);
+  padding: 8px 0 10px;
+  margin-top: -8px;
+}
+.lib-head::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 12px;
+  pointer-events: none;
+  background: linear-gradient(var(--bg), rgba(18, 18, 18, 0));
+}
+
 /* A tab switch crossfades its screen instead of snapping. */
 .screen-host.screen-in { animation: screen-fade 0.22s var(--ease); }
 

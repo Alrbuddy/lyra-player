@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.21";
+  const APP_VERSION = "1.4.22";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -621,7 +621,7 @@
         </div>` : "";
 
     return `<div class="screen">
-      <div class="row-between">
+      <div class="row-between lib-head">
         <div style="display:flex;align-items:center;gap:10px;min-width:0">
           <span class="avatar">L</span><h1 class="h-screen" style="margin:0;white-space:nowrap">Your Library</h1>
         </div>
@@ -1572,6 +1572,28 @@
     if (card) card.style.background = rgba(c, 0.4);
   }
 
+  // When the song changes without a tap — skip, previous, a list rolling on —
+  // the list scrolls to the row that is now playing instead of jumping back to
+  // the top of the page. A row already comfortably in view is left alone.
+  function revealCurrentRow() {
+    const t = player.state().track;
+    if (!t) return;
+    // Only the screen on show: a cached Library copy of the same row would be
+    // found first in the document and is hidden, which used to stop this cold.
+    const host = hosts.get(screenKey(route.view));
+    const row = host && host.querySelector(`[data-play-track="${t.id}"]`);
+    if (!row || !row.offsetParent) return; // not rendered, or on a hidden screen
+    const shell = $("#view");
+    const sr = shell.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    const topGuard = sr.top + 92;       // clear of the pinned Library header
+    const bottomGuard = sr.bottom - 150; // clear of the mini player and tab bar
+    if (r.top >= topGuard && r.bottom <= bottomGuard) return;
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const target = shell.scrollTop + (r.top - sr.top) - 96;
+    shell.scrollTo({ top: Math.max(0, target), behavior: reduce ? "auto" : "smooth" });
+  }
+
   function updatePlayerUI() {
     const st = player.state();
     const t = st.track;
@@ -1630,7 +1652,9 @@
       // player, or an album page keeps pointing at the song you left behind.
       if (lastUiTrackId !== t.id) {
         lastUiTrackId = t.id;
-        render({ quiet: true });
+        // Keep the page where it is, then glide to the row that took over.
+        render({ quiet: true, keep: true });
+        revealCurrentRow();
       }
     }
     // Re-render the song list only when the song itself changed — play/pause
@@ -1638,6 +1662,7 @@
     if (route.view === "library" && libFilter === "songs" && lastUiTrackId !== t.id) {
       lastUiTrackId = t.id;
       render({ quiet: true });
+      revealCurrentRow();
     }
   }
 
@@ -2437,8 +2462,12 @@
     window.addEventListener("popstate", () => {
       arm();
       // On a song / album / artist page the swipe is a Back; on a tab it simply
-      // does nothing rather than jumping somewhere unexpected.
-      if (route.view === "detail") back();
+      // does nothing rather than jumping somewhere unexpected. A stale entry can
+      // itself point at a detail page, so keep stepping until a real screen.
+      if (route.view === "detail") {
+        back();
+        for (let i = 0; i < 4 && route.view === "detail" && historyStack.length; i++) back();
+      }
     });
   }
 
