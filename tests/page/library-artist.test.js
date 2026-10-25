@@ -183,29 +183,38 @@ async function subtitle(page, id) {
     assert.equal(await subtitle(page, b.id), "YFG Fatso • Mixtape");
   });
 
-  await check("an album you name yourself shows with a single song, and clearing it removes it", async () => {
+  await check("an album you name on one song stays hidden until a second song shares it", async () => {
     await seed(page, [
       { title: "A", artist: "YFG Fatso", album: "" },
-      { title: "B", artist: "Other", album: "" },
+      { title: "B", artist: "YFG Fatso", album: "" },
     ]);
     const a = await track(page, "A");
     await openEdit(page, a.id);
     await saveEdit(page, { album: "One-Off EP" });
-    assert.equal((await track(page, "A")).album, "One-Off EP");
+    assert.equal((await track(page, "A")).album, "One-Off EP", "the tag is still saved");
     await tab(page, "albums");
-    assert.match(await libText(page), /One-Off EP/);
+    assert.doesNotMatch(await libText(page), /One-Off EP/, "one song is not an album");
+    await tab(page, "songs");
+    assert.equal(await subtitle(page, a.id), "YFG Fatso", "and the row carries no album");
+
+    const b = await track(page, "B");
+    await openEdit(page, b.id);
+    await saveEdit(page, { album: "One-Off EP" });
+    await tab(page, "albums");
+    assert.match(await libText(page), /One-Off EP/, "two songs make it an album");
     await tab(page, "songs");
     assert.equal(await subtitle(page, a.id), "YFG Fatso • One-Off EP");
+    assert.equal(await subtitle(page, b.id), "YFG Fatso • One-Off EP");
 
+    // Back to one song: the album disappears again, the remaining tag stays stored.
     await openEdit(page, a.id);
     await saveEdit(page, { album: "" });
-    const cleared = await track(page, "A");
-    assert.equal(cleared.album, "");
-    assert.equal(cleared.albumManual, false);
+    assert.equal((await track(page, "A")).album, "");
+    assert.equal((await track(page, "B")).album, "One-Off EP");
     await tab(page, "albums");
-    assert.doesNotMatch(await libText(page), /One-Off EP/);
+    assert.doesNotMatch(await libText(page), /One-Off EP/, "no album for a single song again");
     await tab(page, "songs");
-    assert.equal(await subtitle(page, a.id), "YFG Fatso");
+    assert.equal(await subtitle(page, b.id), "YFG Fatso", "row clean again too");
   });
 
   console.log("\nEdge cases");

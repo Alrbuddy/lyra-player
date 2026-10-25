@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.14";
+  const APP_VERSION = "1.4.15";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -115,11 +115,10 @@
       const name = albumName(t);
       if (!name) continue;
       const key = name.toLowerCase();
-      const prev = counts.get(key);
-      counts.set(key, { n: (prev ? prev.n : 0) + 1, manual: (prev ? prev.manual : false) || !!t.albumManual });
+      counts.set(key, (counts.get(key) || 0) + 1);
     }
     realAlbumKeys = new Set();
-    counts.forEach((v, key) => { if (v.n >= 2 || v.manual) realAlbumKeys.add(key); });
+    counts.forEach((n, key) => { if (n >= 2) realAlbumKeys.add(key); });
   }
 
   // ---------- Artists & albums ----------
@@ -175,16 +174,13 @@
   }
 
   // One song with a stray album tag is not an album — showing those made a
-  // duplicate single-song album per download. An album counts when at least
-  // two songs share it, or when you named it yourself on a track.
+  // duplicate single-song album per download. An album counts only when at
+  // least two songs share the name, whether the tag came from the file or from
+  // you: naming an album on a single song stores the tag but shows nothing
+  // until a second song matches it.
   function albumsOf(list) {
-    const groups = groupTracks(list.filter((t) => albumName(t)), albumName, "albumManual");
-    const out = groups.map((g) => ({
-      ...g,
-      manual: g.tracks.some((t) => t.albumManual),
-    }));
-    return out
-      .filter((g) => g.tracks.length >= 2 || g.manual)
+    return groupTracks(list.filter((t) => albumName(t)), albumName, "albumManual")
+      .filter((g) => g.tracks.length >= 2)
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
