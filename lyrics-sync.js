@@ -232,220 +232,6 @@
     });
   }
 
-  /**
-   * mergeTranscripts(runs) -> one transcript agreed by several passes.
-   * Each run is { words: [{ word, start, end, probability }], text }.
-   * The median-length run is the skeleton (never the longest, which is the one
-   * a hallucination inflates); every other run is aligned onto it, word by
-   * word, and the majority spelling wins. A word two runs heard and one
-   * missed is added back between its neighbours. All automatic.
-   */
-  // Two passes rarely agree on punctuation, and "I'm" vs "Im" is the same
-  // word to a listener. Compare on letters and digits only.
-  function voteKey(word) {
-    return normalizeWord(word).replace(/[.,!?;:"'`()[\]{}<>\-–—…]/g, "");
-  }
-
-  function mergeTranscripts(runs) {
-    const valid = (Array.isArray(runs) ? runs : [])
-      .filter((r) => r && Array.isArray(r.words) && r.words.length)
-      .map((r) => ({
-        text: String(r.text || ""),
-        words: r.words.map((w) => ({
-          text: String(w.word != null ? w.word : w.text == null ? "" : w.text).trim(),
-          start: Number(w.start) || 0,
-          end: Number(w.end) || Number(w.start) || 0,
-          p: w.probability == null || !Number.isFinite(Number(w.probability)) ? null : Number(w.probability),
-        })).filter((w) => w.text),
-      }))
-      .filter((r) => r.words.length);
-
-    if (!valid.length) return null;
-    if (valid.length === 1) {
-      return {
-        words: valid[0].words.map((w) => ({ word: w.text, start: w.start, end: w.end, probability: w.p, agree: 1 })),
-        text: valid[0].text,
-        passes: 1, agreement: 1, conflicts: 0, fixed: 0, added: 0,
-      };
-    }
-
-    // The shortest pass is the skeleton: it is the one least likely to have
-    // invented a repeated tail, and anything two other passes heard that it
-    // missed is added back below. A long hallucinated pass is never trusted.
-    let refIndex = 0;
-    for (let i = 1; i < valid.length; i++) {
-      if (valid[i].words.length < valid[refIndex].words.length) refIndex = i;
-    }
-    const ref = valid[refIndex];
-    const others = valid.filter((_, i) => i !== refIndex);
-    const refNorms = ref.words.map((w) => voteKey(w.text));
-
-    // Align every other pass onto the skeleton. Confident matches are anchors;
-    // between two anchors, a run block and a skeleton block of the same length
-    // are the same words said twice (that is how "again" and "agane" get to
-    // vote against each other). Unequal blocks are a word one pass heard and
-    // the skeleton did not, so they become insertion candidates.
-    const votes = new Map();   // skeleton index -> words other passes heard
-    const gaps = new Map();    // skeleton gap -> words that fit there
-
-    others.forEach((run) => {
-      const theirs = run.words.map((w) => voteKey(w.text));
-      const m = alignTokens(theirs, refNorms);
-      const reverse = new Map();
-      m.forEach((refIdx, runIdx) => { if (!reverse.has(refIdx)) reverse.set(refIdx, runIdx); });
-      const anchors = [...reverse.entries()].sort((a, b) => a[0] - b[0]);
-      let prevRef = -1;
-      let prevRun = -1;
-      anchors.concat([[ref.words.length, run.words.length]]).forEach(([refIdx, runIdx]) => {
-        // The confident matches vote for themselves.
-        if (refIdx < ref.words.length && runIdx < run.words.length) {
-          const anchorWord = run.words[runIdx];
-          if (anchorWord) {
-            const list = votes.get(refIdx) || [];
-            list.push(anchorWord.text);
-            votes.set(refIdx, list);
-          }
-        }
-        const runBlock = [];
-        for (let x = prevRun + 1; x < runIdx; x++) runBlock.push(x);
-        const refBlock = [];
-        for (let x = prevRef + 1; x < refIdx; x++) refBlock.push(x);
-        if (runBlock.length && runBlock.length === refBlock.length) {
-          refBlock.forEach((ri, k) => {
-            const w = run.words[runBlock[k]];
-            if (!w) return;
-            const list = votes.get(ri) || [];
-            list.push(w.text);
-            votes.set(ri, list);
-          });
-        } else if (runBlock.length) {
-          const gapKey = prevRef + 1;
-          const list = gaps.get(gapKey) || [];
-          runBlock.forEach((x) => { if (run.words[x]) list.push(run.words[x]); });
-          gaps.set(gapKey, list);
-        }
-        prevRef = refIdx;
-        prevRun = runIdx;
-      });
-    });
-
-    const surface = (counts, prefer) => {
-      let best = prefer;
-      let bestN = -1;
-      counts.forEach((n, text) => {
-        if (n > bestN) { best = text; bestN = n; }
-      });
-      return best;
-    };
-
-    const flushGap = (list, prevEnd, nextStart) => {
-      if (!list || !list.length) return [];
-      const groups = new Map();
-      list.forEach((w) => {
-        const key = voteKey(w.text) || w.text.toLowerCase();
-        const g = groups.get(key) || { n: 0, start: 0, end: 0, texts: new Map() };
-        g.n++;
-        g.start += w.start;
-        g.end += w.end;
-        g.texts.set(w.text, (g.texts.get(w.text) || 0) + 1);
-        groups.set(key, g);
-      });
-      const picks = [];
-      groups.forEach((g) => {
-        if (g.n < 2) return; // one pass alone is a disagreement, not a word
-        picks.push({ text: surface(g.texts, ""), start: g.start / g.n, end: g.end / g.n, agree: g.n });
-      });
-      picks.sort((a, b) => a.start - b.start);
-      let lastEnd = prevEnd || 0;
-      return picks.map((p) => {
-        const start = Math.max(lastEnd, nextStart != null ? Math.min(p.start, nextStart - 0.04) : p.start);
-        const end = Math.max(start + 0.05, nextStart != null ? Math.min(p.end, nextStart) : p.end);
-        lastEnd = end;
-        return { word: p.text, start, end, probability: null, agree: p.agree, added: true };
-      });
-    };
-
-    const out = [];
-    let conflicts = 0;
-    let fixed = 0;
-    let added = 0;
-    let agreeSum = 0;
-
-    const pushGap = (at, nextStart) => {
-      const list = gaps.get(at);
-      if (!list) return;
-      const prevEnd = out.length ? out[out.length - 1].end : 0;
-      const ins = flushGap(list, prevEnd, nextStart);
-      ins.forEach((w) => out.push(w));
-      added += ins.length;
-    };
-
-    ref.words.forEach((rw, i) => {
-      pushGap(i, rw.start);
-      const normRef = refNorms[i];
-      const counts = new Map();
-      counts.set(normRef, 1);
-      const surfaces = new Map();
-      surfaces.set(rw.text, 1);
-      (votes.get(i) || []).forEach((text) => {
-        const n = voteKey(text);
-        if (!n) return;
-        counts.set(n, (counts.get(n) || 0) + 1);
-        surfaces.set(text, (surfaces.get(text) || 0) + 1);
-      });
-
-      let bestNorm = normRef;
-      let bestN = 0;
-      counts.forEach((n, key) => { if (n > bestN) { bestN = n; bestNorm = key; } });
-
-      // Prefer the skeleton's own spelling when it is part of the majority:
-      // casing and punctuation from a temp-0 pass are the most reliable.
-      let text = rw.text;
-      if (bestNorm !== normRef) {
-        let pick = null;
-        let pickN = -1;
-        surfaces.forEach((n, t) => {
-          if (voteKey(t) === bestNorm && n > pickN) { pick = t; pickN = n; }
-        });
-        if (pick) text = pick;
-      }
-
-      const agree = Math.max(1, Math.min(valid.length, bestN));
-      agreeSum += agree / valid.length;
-      if (agree < valid.length) conflicts++;
-      if (voteKey(text) !== normRef) fixed++;
-
-      const prevEnd = out.length ? out[out.length - 1].end : 0;
-      const start = Math.max(prevEnd, rw.start);
-      out.push({
-        word: text,
-        start,
-        end: Math.max(start + 0.05, rw.end),
-        probability: rw.p,
-        agree,
-      });
-    });
-    pushGap(ref.words.length, null);
-
-    // Timings must stay monotonic all the way down.
-    let last = 0;
-    out.forEach((w) => {
-      if (w.start < last) w.start = last;
-      if (w.end <= w.start) w.end = w.start + 0.05;
-      last = w.start;
-    });
-
-    return {
-      words: out,
-      text: out.map((w) => w.word).join(" "),
-      passes: valid.length,
-      agreement: out.length ? agreeSum / Math.max(1, ref.words.length) : 0,
-      conflicts,
-      fixed,
-      added,
-    };
-  }
-
   function alignLyrics(userText, words) {
     const transcript = (Array.isArray(words) ? words : []).map((w) => {
       const start = Number(w.start);
@@ -718,6 +504,330 @@
     }
   }
 
+  // ------------------------------------------------------- chunked upload
+  // One upload for a whole song is where rap breaks down: Whisper drifts,
+  // merges fast words, drops others, and loops on a phrase until it invents a
+  // tail. Groq's own guidance is to chunk the audio into overlapping segments,
+  // so every song is decoded once, pre-filtered, and sent as overlapping
+  // chunks whose word times are shifted back onto the song's clock.
+  const CHUNK_SECONDS = 25;   // new audio per request
+  const CHUNK_OVERLAP = 3;    // shared with the next chunk, so no word is cut
+  const MAX_RETRY_CHUNKS = 3; // quality re-decodes per song (free-tier friendly)
+  const MAX_AUDIO_SECONDS = 20 * 60;
+
+  /** Rough syllable count, used to spread word timings inside a segment. */
+  function syllables(word) {
+    const s = String(word || "").toLowerCase().replace(/[^a-z]/g, "");
+    if (!s) return 1;
+    const groups = s.match(/[aeiouy]+/g);
+    let n = groups ? groups.length : 1;
+    if (n > 1 && /[^aeiou]e$/.test(s)) n--; // "time" is one beat, not two
+    return Math.max(1, Math.min(8, n));
+  }
+
+  /** chunkPlan(seconds) -> [{ start, end }] covering the whole track. */
+  function chunkPlan(seconds, opts) {
+    const settings = opts || {};
+    const len = Math.max(5, Number(settings.chunkSeconds) || CHUNK_SECONDS);
+    const rawOverlap = settings.overlap == null ? CHUNK_OVERLAP : Number(settings.overlap) || 0;
+    const overlap = Math.min(len / 2, Math.max(0, rawOverlap));
+    const total = Number(seconds) || 0;
+    if (!(total > 0)) return [];
+    if (total <= len + overlap) return [{ start: 0, end: total }];
+    const out = [];
+    let start = 0;
+    while (start < total - 0.25) {
+      const end = Math.min(total, start + len + overlap);
+      out.push({ start, end });
+      if (end >= total - 0.01) break;
+      start = Math.max(end - overlap, start + 1);
+    }
+    // A sliver at the end costs a whole request (and the 10 s minimum bill) for
+    // two seconds of audio, so let the chunk before it run to the end.
+    if (out.length > 1) {
+      const last = out[out.length - 1];
+      if (last.end - last.start < 6) {
+        out.pop();
+        out[out.length - 1].end = last.end;
+      }
+    }
+    return out;
+  }
+
+  function encodePcm16(samples, offset, frames, gain, rate) {
+    const data = new DataView(new ArrayBuffer(44 + frames * 2));
+    const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) data.setUint8(off + i, s.charCodeAt(i)); };
+    writeStr(0, "RIFF");
+    data.setUint32(4, 36 + frames * 2, true);
+    writeStr(8, "WAVE");
+    writeStr(12, "fmt ");
+    data.setUint32(16, 16, true);
+    data.setUint16(20, 1, true);          // PCM
+    data.setUint16(22, 1, true);          // mono
+    data.setUint32(24, rate, true);
+    data.setUint32(28, rate * 2, true);
+    data.setUint16(32, 2, true);
+    data.setUint16(34, 16, true);
+    writeStr(36, "data");
+    data.setUint32(40, frames * 2, true);
+    let off = 44;
+    for (let i = 0; i < frames; i++) {
+      let v = (samples[offset + i] || 0) * gain;
+      v = v > 1 ? 1 : v < -1 ? -1 : v;
+      data.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+      off += 2;
+    }
+    return data.buffer;
+  }
+
+  /** One chunk as a 16 kHz mono WAV, peak-normalised. */
+  function chunkBlob(buffer, startSec, endSec) {
+    const rate = buffer.sampleRate || 16000;
+    const src = buffer.getChannelData(0);
+    const a = Math.max(0, Math.floor(startSec * rate));
+    const b = Math.min(src.length, Math.ceil(endSec * rate));
+    const frames = Math.max(1, b - a);
+    let peak = 0;
+    for (let i = a; i < a + frames; i++) {
+      const v = src[i] < 0 ? -src[i] : src[i];
+      if (v > peak) peak = v;
+    }
+    // Lift quiet stretches (ad-libs buried under the beat) without amplifying
+    // near-silence into a hiss the model tries to read as words.
+    const gain = peak > 0.02 ? Math.min(6, 0.95 / peak) : 1;
+    return new Blob([encodePcm16(src, a, frames, gain, rate)], { type: "audio/wav" });
+  }
+
+  /** Decode once, then hand back 16 kHz mono with the rumble cut and the
+   *  quiet parts evened out — both help Whisper hear fast, layered rap. */
+  async function decodeForTranscription(blob) {
+    if (!blob || !blob.size) throw new LlabError("empty", "This song has no audio stored on the device.");
+    const AC = W.AudioContext || W.webkitAudioContext;
+    if (!AC || !W.OfflineAudioContext) {
+      throw new LlabError("unsupported", "This browser can't prepare the audio for upload.");
+    }
+    let ctx = null;
+    let decoded = null;
+    try {
+      ctx = new AC();
+      decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+    } catch (e) {
+      throw new LlabError("decode", "Couldn't decode this song's audio in the browser.");
+    } finally {
+      if (ctx && ctx.close) ctx.close();
+    }
+    if (!decoded || !(decoded.duration > 0)) throw new LlabError("decode", "That audio came back empty.");
+    if (decoded.duration > MAX_AUDIO_SECONDS) {
+      throw new LlabError("too-long", "This is over 20 minutes long. Sync it in shorter pieces.");
+    }
+    const rate = 16000;
+    const frames = Math.max(1, Math.ceil(decoded.duration * rate));
+    const off = new W.OfflineAudioContext(1, frames, rate);
+    const src = off.createBufferSource();
+    src.buffer = decoded;
+    const highpass = off.createBiquadFilter();
+    highpass.type = "highpass";
+    highpass.frequency.value = 80;
+    highpass.Q.value = 0.7;
+    const level = off.createDynamicsCompressor();
+    level.threshold.value = -24;
+    level.knee.value = 24;
+    level.ratio.value = 3.5;
+    level.attack.value = 0.004;
+    level.release.value = 0.22;
+    src.connect(highpass);
+    highpass.connect(level);
+    level.connect(off.destination);
+    src.start();
+    const rendered = await off.startRendering();
+    return { buffer: rendered, seconds: rendered.length / rate };
+  }
+
+  /**
+   * spreadSegmentWords(words, segments) -> words with usable timings.
+   * Whisper's segment start/end are reliable; its word times are not, and on
+   * fast rap they bunch up so the karaoke fill lags the vocal. When a segment's
+   * word times are bunched or out of order, spread them across the segment by
+   * syllable weight instead of pretending they are exact.
+   */
+  function spreadSegmentWords(words, segments) {
+    const out = (Array.isArray(words) ? words : []).map((w) => Object.assign({}, w));
+    const segs = (Array.isArray(segments) ? segments : [])
+      .map((s) => ({ start: Number(s && s.start), end: Number(s && s.end) }))
+      .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
+      .sort((a, b) => a.start - b.start);
+    const claimed = new Set();
+
+    const sane = (idx, seg) => {
+      if (idx.length < 2) return true;
+      for (let i = 1; i < idx.length; i++) {
+        if (!(out[idx[i]].start > out[idx[i - 1]].start + 0.001)) return false;
+      }
+      const used = out[idx[idx.length - 1]].end - out[idx[0]].start;
+      return used >= (seg.end - seg.start) * 0.5;
+    };
+
+    segs.forEach((seg) => {
+      const inside = [];
+      out.forEach((w, i) => {
+        if (claimed.has(i)) return;
+        if (w.start >= seg.start - 0.25 && w.start < seg.end + 0.25) {
+          inside.push(i);
+          claimed.add(i);
+        }
+      });
+      if (!inside.length || sane(inside, seg)) return;
+      const span = Math.max(0.2, seg.end - seg.start);
+      const weights = inside.map((i) => syllables(out[i].word));
+      const total = weights.reduce((a, b) => a + b, 0) || inside.length;
+      let cursor = seg.start;
+      inside.forEach((idx, k) => {
+        const isLast = k === inside.length - 1;
+        const start = Math.min(cursor, seg.end - 0.05);
+        const share = span * (weights[k] / total);
+        const end = isLast ? Math.max(start + 0.08, seg.end) : Math.min(seg.end, start + Math.max(0.08, share));
+        out[idx].start = start;
+        out[idx].end = Math.max(start + 0.08, end);
+        cursor = out[idx].end;
+      });
+    });
+    return out;
+  }
+
+  /** 0 = a clean decode; 2+ = a repetition loop worth re-decoding. */
+  function chunkScore(segments) {
+    let worst = 0;
+    (Array.isArray(segments) ? segments : []).forEach((s) => {
+      let score = 0;
+      const comp = Number(s && s.compression_ratio);
+      const logp = Number(s && s.avg_logprob);
+      const noSpeech = Number(s && s.no_speech_prob);
+      if (Number.isFinite(comp) && comp > 2.4) score += 2;   // looping decoder
+      if (Number.isFinite(logp) && logp < -0.8) score += 1;   // guessing
+      if (Number.isFinite(noSpeech) && noSpeech > 0.6) score += 1;
+      if (score > worst) worst = score;
+    });
+    return worst;
+  }
+
+  /**
+   * finalizeWords(runs) -> one word list on the song's clock.
+   * Chunks overlap, so each one owns only the middle of its range: a word near
+   * the edge is taken from whichever chunk heard it with more context, and a
+   * word both decodes reported is kept once.
+   */
+  function finalizeWords(runs) {
+    const list = [];
+    const all = Array.isArray(runs) ? runs : [];
+    all.forEach((run, i) => {
+      const chunk = run && run.chunk ? run.chunk : { start: 0, end: Infinity };
+      const prev = i > 0 ? all[i - 1].chunk : null;
+      const next = i < all.length - 1 ? all[i + 1].chunk : null;
+      const lo = prev ? (chunk.start + prev.end) / 2 : -Infinity;
+      const hi = next ? (chunk.end + next.start) / 2 : Infinity;
+      (run.words || []).forEach((w) => {
+        const mid = (w.start + w.end) / 2;
+        if (mid < lo || mid >= hi) return;
+        if (!w || !w.word) return;
+        list.push({
+          word: w.word,
+          start: Number(w.start) || 0,
+          end: Number(w.end) || (Number(w.start) || 0) + 0.3,
+          probability: w.probability == null ? null : w.probability,
+        });
+      });
+    });
+
+    list.sort((a, b) => a.start - b.start || a.end - b.end);
+    const out = [];
+    let last = -1;
+    list.forEach((w) => {
+      const before = out[out.length - 1];
+      if (before && Math.abs(w.start - before.start) < 0.2 &&
+          normalizeWord(before.word) === normalizeWord(w.word)) return;
+      const start = Math.max(w.start, last < 0 ? 0 : last + 0.01);
+      const end = Math.max(start + 0.05, w.end);
+      out.push({ word: w.word, start, end, probability: w.probability });
+      last = start;
+    });
+    return out;
+  }
+
+  /** One chunk: slice, upload, shift its words onto the song's clock. */
+  async function transcribeChunk(buffer, chunk, opts, temperature, onStage) {
+    const wav = chunkBlob(buffer, chunk.start, chunk.end);
+    const res = await transcribeBlob(wav, {
+      key: opts.key,
+      language: opts.language,
+      endpoint: opts.endpoint,
+      temperature,
+      onStage,
+    });
+    const offset = chunk.start;
+    const words = res.words.map((w) => ({
+      word: w.word,
+      start: w.start + offset,
+      end: w.end + offset,
+      probability: w.probability,
+    }));
+    const segments = (res.segments || []).map((s) => Object.assign({}, s, {
+      start: (Number(s.start) || 0) + offset,
+      end: (Number(s.end) || 0) + offset,
+    }));
+    return { words: spreadSegmentWords(words, segments), segments, language: res.language };
+  }
+
+  /**
+   * transcribeAudio(blob, {key, language, onProgress}) ->
+   *   { words, text, language, chunks, retried, seconds }
+   * Chunked, pre-filtered and stitched — the browser-only path that beats one
+   * big upload for dense vocals.
+   */
+  async function transcribeAudio(blob, opts) {
+    opts = opts || {};
+    const prep = await decodeForTranscription(blob);
+    const plan = chunkPlan(prep.seconds, opts);
+    if (!plan.length) throw new LlabError("empty", "That audio came back empty.");
+    const runs = [];
+    let retried = 0;
+    let lastError = null;
+
+    for (let i = 0; i < plan.length; i++) {
+      const chunk = plan[i];
+      const stage = (kind) => {
+        if (opts.onProgress) opts.onProgress({ index: i, count: plan.length, stage: kind });
+      };
+      try {
+        let run = await transcribeChunk(prep.buffer, chunk, opts, 0, stage);
+        // A looped decode is worse than a second opinion: re-send just this
+        // chunk at a small temperature and keep whichever reads better.
+        if (chunkScore(run.segments) >= 2 && retried < MAX_RETRY_CHUNKS) {
+          retried++;
+          const again = await transcribeChunk(prep.buffer, chunk, opts, 0.2, () => stage("retrying"));
+          if (chunkScore(again.segments) < chunkScore(run.segments)) run = again;
+        }
+        if (run.words.length) runs.push({ chunk, words: run.words, segments: run.segments, language: run.language });
+      } catch (e) {
+        const fatal = e && (e.code === "key" || e.code === "nokey" || e.code === "cors" ||
+          e.code === "offline" || e.code === "too-long" || e.code === "unsupported");
+        if (fatal) throw e;
+        lastError = e;
+      }
+      if (i < plan.length - 1) await new Promise((r) => setTimeout(r, 150));
+    }
+
+    const words = finalizeWords(runs);
+    if (!words.length) throw lastError || new LlabError("empty", "Groq returned no words.");
+    return {
+      words,
+      text: words.map((w) => w.word).join(" "),
+      language: (runs[0] && runs[0].language) || opts.language || "en",
+      chunks: plan.length,
+      retried,
+      seconds: prep.seconds,
+    };
+  }
+
   // ---------------------------------------------------------------- Groq
   function xhrRequest(url, opts) {
     return new Promise((resolve, reject) => {
@@ -851,10 +961,9 @@
     const file = await uploadFileFrom(blob);
     const form = new FormData();
     form.append("file", file, file.name);
-    form.append("model", opts.model || "whisper-large-v3");
+    form.append("model", "whisper-large-v3");
     form.append("response_format", "verbose_json");
     form.append("temperature", String(opts.temperature == null ? 0 : opts.temperature));
-    if (opts.prompt) form.append("prompt", String(opts.prompt).slice(0, 700));
     form.append("language", opts.language || "en");
     form.append("timestamp_granularities[]", "word");
     form.append("timestamp_granularities[]", "segment");
@@ -1012,7 +1121,7 @@
       }
       const tip = doc().getElementById("llab-tip");
       if (tip) {
-        if (!hasWords) tip.textContent = "Auto-sync transcribes this song in three passes and syncs the lyrics for you.";
+        if (!hasWords) tip.textContent = "Auto-sync transcribes this song and syncs the lyrics for you.";
         else if (!hasLyrics) tip.textContent = "Paste your own words in Edit lyrics, then Sync my lyrics matches them to the audio.";
         else tip.textContent = "";
       }
@@ -1029,90 +1138,47 @@
     return npTrack() || viewTrack || null;
   }
 
-  // Every pass is the accurate model; what varies is the context hint, so the
-  // passes make genuinely different guesses instead of repeating one decode.
-  // Three sightings of the same word is the vote; two when there are no lyrics
-  // to hint from (a fourth identical pass would add nothing).
-  function firstLyricLine(t) {
-    const line = String((t && t.lyrics) || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
-    return line ? line.slice(0, 180) : "";
-  }
-
-  function hintFor(t, kind) {
-    if (kind === "lyrics") return firstLyricLine(t);
-    if (kind === "meta") {
-      const artist = t && t.artist && !/^unknown artist$/i.test(t.artist) ? t.artist : "";
-      return [artist, (t && t.album) || "", (t && t.title) || ""].filter(Boolean).join(" · ").slice(0, 160);
-    }
-    return "";
-  }
-
-  function passesFor(t) {
-    const list = [
-      { temperature: 0, hint: "meta" },
-      { temperature: 0, hint: "" },
-    ];
-    list.push(firstLyricLine(t)
-      ? { temperature: 0, hint: "lyrics" }
-      : { temperature: 0.3, hint: "" });
-    return list;
-  }
-
   async function runAutoSync() {
     await ensure();
     const t = currentTrack();
     if (!t) { toast("Play a song first"); return; }
     if (!apiKey) { toast("Add your Groq API key in Settings"); return; }
-    setStatus("Preparing…", "");
+    setStatus("Preparing… (16 kHz mono)", "");
     try {
-      const prepared = await prepareAudioForUpload(t.audio);
-      if (prepared.converted) setStatus("Preparing… (shrunk to 16 kHz mono)", "");
-
-      const passes = passesFor(t);
-      const runs = [];
-      let lastError = null;
-      for (let i = 0; i < passes.length; i++) {
-        const spec = passes[i];
-        const label = "Pass " + (i + 1) + "/" + passes.length + " — ";
-        try {
-          const run = await transcribeBlob(prepared.blob, {
-            key: apiKey,
-            language,
-            temperature: spec.temperature,
-            prompt: hintFor(t, spec.hint),
-            onStage: (stage) => setStatus(label + (stage === "uploading" ? "uploading…" : "transcribing…"), ""),
-          });
-          if (run.words.length) runs.push(run);
-          else lastError = new LlabError("empty", "A pass came back empty.");
-        } catch (e) {
-          lastError = e;
-          // A bad key, no network or a blocked origin fails the same way every
-          // time — three doomed uploads help nobody.
-          const fatal = e && (e.code === "key" || e.code === "nokey" || e.code === "cors" || e.code === "offline" || e.code === "too-long");
-          if (fatal) throw e;
-        }
-        if (i < passes.length - 1) await new Promise((r) => setTimeout(r, 200));
+      let out;
+      let chunks = 1;
+      try {
+        out = await transcribeAudio(t.audio, {
+          key: apiKey,
+          language,
+          onProgress: (p) => {
+            const n = (p.index + 1) + "/" + p.count;
+            const what = p.stage === "uploading" ? "uploading" : p.stage === "retrying" ? "re-checking" : "transcribing";
+            setStatus("Chunk " + n + " — " + what + "…", "");
+          },
+        });
+        chunks = out.chunks;
+      } catch (e) {
+        // Safari cannot decode every codec through Web Audio. Rather than fail,
+        // send the file whole the way the app always did.
+        if (!e || (e.code !== "decode" && e.code !== "unsupported")) throw e;
+        const prepared = await prepareAudioForUpload(t.audio);
+        setStatus("Transcribing…", "");
+        out = await transcribeBlob(prepared.blob, {
+          key: apiKey,
+          language,
+          onStage: (stage) => setStatus(stage === "uploading" ? "Uploading…" : "Transcribing…", ""),
+        });
       }
-      const out = mergeTranscripts(runs);
-      if (!out || !out.words.length) throw lastError || new LlabError("empty", "Groq returned no words.");
+      if (!out.words.length) throw new LlabError("empty", "Groq returned no words.");
       const fresh = findTrack(t.id) || t;
       const live = npTrack();
       const base = {
         lyricsWords: out.words,
         lyricsTranscript: out.text,
-        transcriptLang: runs[0].language,
+        transcriptLang: out.language,
         transcribedAt: Date.now(),
       };
-      if (out.passes > 1) {
-        base.lyricsConsensus = {
-          passes: out.passes,
-          agreement: Math.round(out.agreement * 100) / 100,
-          conflicts: out.conflicts,
-          fixed: out.fixed,
-          added: out.added,
-          at: Date.now(),
-        };
-      }
       let saved = false;
       try {
         await savePatch(fresh, base);
@@ -1141,18 +1207,14 @@
       await refreshTracks();
       const low = out.words.filter((w) => w.probability != null && w.probability < 0.5).length;
       const lowNote = low ? " · " + Math.round((low / out.words.length) * 100) + "% low-confidence" : "";
-      const agreeNote = out.passes > 1
-        ? " · " + out.passes + " passes, " + Math.round(out.agreement * 100) + "% agree"
-        : "";
-      const fixNote = out.fixed ? " · " + out.fixed + " auto-corrected" : "";
+      const chunkNote = chunks > 1 ? " · " + chunks + " chunks" : "";
+      const retryNote = out.retried ? " · " + out.retried + " re-checked" : "";
       if (!saved) {
-        setStatus("Transcribed, but couldn't save it on this device" + agreeNote, "bad");
+        setStatus("Transcribed, but couldn't save it on this device" + chunkNote + lowNote, "bad");
       } else {
-        setStatus(out.words.length + " words saved" + (hasOwnLyrics ? "" : " · lyrics synced") + agreeNote + fixNote + lowNote, "ok");
+        setStatus(out.words.length + " words saved" + (hasOwnLyrics ? "" : " · lyrics synced") + chunkNote + retryNote + lowNote, "ok");
       }
-      toast(hasOwnLyrics
-        ? "Transcript saved — tap Sync my lyrics"
-        : "Lyrics synced" + (out.passes > 1 ? " from " + out.passes + " passes" : ""));
+      toast(hasOwnLyrics ? "Transcript saved — tap Sync my lyrics" : "Lyrics synced from the transcript");
       mountNp();
       if (!hasOwnLyrics) refreshLyricsView();
     } catch (e) {
@@ -1844,7 +1906,7 @@
             <div><div class="l">Auto-scroll lyrics</div><div class="s">Default for the lyrics view</div></div>
             <input type="checkbox" class="ios" id="llab-autoscroll" aria-label="Auto-scroll lyrics">
           </div>
-          <p class="llab-note">Uploads this song's audio to Groq up to 3 times and keeps what the passes agree on — about 10 minutes of the free hourly allowance for a 3½-minute track. Needs internet. The key stays on this device.</p>
+          <p class="llab-note">Uploads this song's audio to Groq in short overlapping chunks, so no word is cut off. Free tier. Needs internet. The key stays on this device.</p>
         </div>`;
       if (anchor && anchor.closest(".set-row")) anchor.closest(".set-row").before(card);
       else host.appendChild(card);
@@ -1922,7 +1984,6 @@
     handlesHighlight,
     handlesAutoScroll,
     alignLyrics,
-    mergeTranscripts,
     parseLrc,
     toLrc,
     normalizeWord,
@@ -1933,6 +1994,13 @@
     encodeWav16,
     prepareAudioForUpload,
     transcribeBlob, uploadFileFrom,
+    transcribeAudio,
+    chunkPlan,
+    chunkScore,
+    chunkBlob,
+    finalizeWords,
+    spreadSegmentWords,
+    syllables,
     normalizeTranscript,
     testKey,
     importLrcFile,

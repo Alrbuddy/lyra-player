@@ -94,6 +94,29 @@ async function seed(page, keepSettings) {
   }, !!keepSettings);
 }
 
+/** A mono 16 kHz WAV of a quiet tone, long enough to need several chunks. */
+async function addLongTrack(page, secs) {
+  return page.evaluate(async (secs) => {
+    const sr = 16000;
+    const frames = sr * secs;
+    const buf = new ArrayBuffer(44 + frames * 2);
+    const dv = new DataView(buf);
+    const ws = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    ws(0, "RIFF"); dv.setUint32(4, 36 + frames * 2, true); ws(8, "WAVE"); ws(12, "fmt ");
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true);
+    dv.setUint16(34, 16, true); ws(36, "data"); dv.setUint32(40, frames * 2, true);
+    for (let i = 0; i < frames; i++) dv.setInt16(44 + i * 2, Math.round(Math.sin(i / 14) * 400), true);
+    const id = await Lyra.db.addTrack({
+      title: "Chunk Fixture", artist: "Test Artist", album: "Test Album",
+      duration: secs, audio: new Blob([buf], { type: "audio/wav" }),
+      createdAt: Date.now(), plays: 0, lyrics: "",
+    });
+    await Lyra.app.refreshData();
+    return id;
+  }, secs);
+}
+
 async function openNowPlaying(page) {
   await page.evaluate(async () => {
     const id = Lyra.app.tracks[0].id;
@@ -237,10 +260,7 @@ async function closeOverlays(page) {
   });
 
   await check("auto-sync turns the transcript into synced lyrics when there are none", async () => {
-    let calls = 0;
-    await page.route("https://api.groq.com/**", (route) => {
-      calls++;
-      return route.fulfill({
+    await page.route("https://api.groq.com/**", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
@@ -254,8 +274,7 @@ async function closeOverlays(page) {
         ],
         segments: [],
       }),
-      });
-    });
+    }));
     // Start from a song with no lyrics of its own, like a fresh download —
     // keeping the fixture so the later lyrics-view checks still have 12 lines.
     const original = await page.evaluate(async () => {
@@ -285,8 +304,6 @@ async function closeOverlays(page) {
     assert.ok(out.lines >= 2, "a pause splits the lines, got " + out.lines);
     assert.equal(out.source, "transcript");
     assert.equal(out.alignEnabled, true, "Sync my lyrics is usable once words exist");
-    assert.equal(calls, 3, "three passes were sent, not one");
-    assert.match(out.status, /3 passes/, "the status reports the passes: " + out.status);
     await page.unroute("https://api.groq.com/**");
     await page.evaluate(async (saved) => {
       const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
@@ -298,72 +315,85 @@ async function closeOverlays(page) {
     }, original);
   });
 
-  await check("a word one pass misheard is outvoted by the other two", async () => {
+  await check("a long song is sent as overlapping chunks and lands on the song's clock", async () => {
+    const id = await addLongTrack(page, 60);
     let calls = 0;
     await page.route("https://api.groq.com/**", (route) => {
       calls++;
-      // First pass mishears it; the two after it agree on the right word.
-      const third = calls === 1 ? "agane" : "again";
+      const local = [
+        { word: "part" + calls, start: 1.5, end: 2.0 },
+        { word: "line" + calls, start: 5.0, end: 5.6 },
+      ];
       return route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          text: "hello there " + third + " now",
+          text: local.map((w) => w.word).join(" "),
           language: "en",
-          words: [
-            { word: "hello", start: 0.2, end: 0.6 },
-            { word: "there", start: 0.6, end: 1.0 },
-            { word: third, start: 2.4, end: 2.8 },
-            { word: "now", start: 2.8, end: 3.2 },
-          ],
-          segments: [],
+          words: local,
+          segments: [{ start: 1, end: 6, avg_logprob: -0.2, compression_ratio: 1.4 }],
         }),
       });
     });
-    const original = await page.evaluate(async () => {
-      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
-      const saved = { lyrics: t.lyrics, synced: t.lyricsSynced };
-      t.lyrics = "";
-      t.lyricsSynced = null;
-      t.lyricsWords = null;
-      t.lyricsConsensus = null;
-      await Lyra.db.putTrack(t);
-      await Lyra.app.refreshData();
-      return saved;
-    });
+    await page.evaluate(async (trackId) => {
+      await Lyra.player.playQueue([trackId], 0);
+      document.getElementById("mini").click();
+    }, id);
+    await page.waitForTimeout(400);
     await page.evaluate(() => document.getElementById("llab-auto").click());
-    await page.waitForFunction(() => /words saved/.test((document.getElementById("llab-status") || {}).textContent || ""), null, { timeout: 20000 });
-    const out = await page.evaluate(async () => {
-      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
+    await page.waitForFunction(() => /words saved/.test((document.getElementById("llab-status") || {}).textContent || ""), null, { timeout: 30000 });
+    const out = await page.evaluate(async (trackId) => {
+      const t = await Lyra.db.getTrack(trackId);
       return {
-        words: (t.lyricsWords || []).map((w) => w.word),
-        consensus: t.lyricsConsensus || null,
+        words: (t.lyricsWords || []).map((w) => ({ word: w.word, start: Math.round(w.start * 10) / 10 })),
         status: document.getElementById("llab-status").textContent,
-        lyrics: t.lyrics,
       };
-    });
-    // Put the fixture back before asserting, so a failed assertion cannot
-    // leave the transcript in place for every later check.
+    }, id);
+    assert.equal(calls, 3, "60 s at 25 s + 3 s overlap is three uploads, got " + calls);
+    assert.equal(out.words.length, 6, "two words per chunk survive the stitch");
+    assert.deepEqual(out.words.map((w) => w.start), [1.5, 5, 26.5, 30, 51.5, 55], "each chunk is shifted by its own start");
+    for (let i = 1; i < out.words.length; i++) {
+      assert.ok(out.words[i].start > out.words[i - 1].start, "times stay monotonic");
+    }
+    assert.match(out.status, /3 chunks/, "status reports the chunks: " + out.status);
     await page.unroute("https://api.groq.com/**");
-    await page.evaluate(async (saved) => {
-      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
-      t.lyrics = saved.lyrics;
-      t.lyricsSynced = saved.synced;
-      t.lyricsWords = null;
-      t.lyricsConsensus = null;
-      await Lyra.db.putTrack(t);
+    await page.evaluate(async (trackId) => {
+      await Lyra.db.deleteTrack(trackId);
       await Lyra.app.refreshData();
-    }, original);
-    assert.equal(out.words.join(" "), "hello there again now", "the two matching passes won: " + out.words.join(" "));
-    assert.equal(calls, 3);
-    assert.equal(out.consensus.passes, 3);
-    assert.equal(out.consensus.fixed, 1, "the misheard word was corrected automatically");
-    assert.ok(out.consensus.agreement < 1);
-    assert.equal(out.consensus.conflicts, 1);
-    assert.match(out.status, /auto-corrected/);
-    assert.match(out.lyrics, /hello there/, "lyrics built from the merged words");
-    assert.match(out.lyrics, /again now/);
-    assert.equal(/agane/.test(out.lyrics), false, "the misheard spelling is gone");
+      await Lyra.player.playQueue([Lyra.app.tracks[0].id], 0);
+    }, id);
+    await page.waitForTimeout(250);
+  });
+
+  await check("a looped chunk is re-sent instead of being kept", async () => {
+    let calls = 0;
+    await page.route("https://api.groq.com/**", (route) => {
+      calls++;
+      const looped = calls === 1;
+      const payload = looped ? {
+        text: "loopy loopy loopy",
+        language: "en",
+        words: [1, 2, 3].map((i) => ({ word: "loopy", start: i, end: i + 0.4 })),
+        segments: [{ start: 0, end: 8, avg_logprob: -0.4, compression_ratio: 3.1, no_speech_prob: 0.1 }],
+      } : {
+        text: "clean words",
+        language: "en",
+        words: [{ word: "clean", start: 1, end: 1.4 }, { word: "words", start: 1.6, end: 2 }],
+        segments: [{ start: 1, end: 2, avg_logprob: -0.2, compression_ratio: 1.3, no_speech_prob: 0.1 }],
+      };
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payload) });
+    });
+    const out = await page.evaluate(async () => {
+      const track = Lyra.app.tracks[0];
+      const res = await Lyra.lyricsSync.transcribeAudio(track.audio, { key: "k", language: "en", chunkSeconds: 6, overlap: 2 });
+      return { words: res.words.map((w) => w.word), retried: res.retried, chunks: res.chunks };
+    });
+    assert.equal(out.chunks, 3, "20 s at 6 s + 2 s is three chunks, got " + out.chunks);
+    assert.equal(out.retried, 1, "the looped chunk was sent again");
+    assert.equal(calls, 4, "three chunks plus one re-check, got " + calls);
+    assert.equal(out.words.includes("loopy"), false, "the loop was replaced: " + out.words.join(" "));
+    assert.ok(out.words.filter((w) => w === "clean").length >= 2, "the clean decode is kept");
+    await page.unroute("https://api.groq.com/**");
   });
 
   await check("lyrics view gets the toolbar and timed lines", async () => {
