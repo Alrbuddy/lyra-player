@@ -69,6 +69,10 @@ input, textarea { user-select: text; -webkit-user-select: text; font: inherit; }
 /* ---- Main view ---- */
 #view {
   position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  /* Its own stacking context, below the bars. Nothing inside a screen — a
+     pinned header, an animated row — can ever paint over the tab bar or the
+     mini player, however the browser composites the scrolling layer. */
+  z-index: 0;
   overflow-y: auto; overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   /* Content scrolls under both floating bars; blur stays visible. */
@@ -325,7 +329,9 @@ input[type="range"]::-webkit-slider-thumb {
   bottom: calc(var(--bar-bottom) + var(--vv-lift, 0px));
   height: var(--nav-h); padding: 5px; gap: 0;
   display: flex; border-radius: 32px; z-index: 50;
-  background: rgba(38, 38, 40, 0.55);
+  /* Dense enough that a scrolling list stays unreadable behind it even where
+     iOS skips the backdrop blur; the blur still softens what shows through. */
+  background: rgba(30, 30, 32, 0.78);
   -webkit-backdrop-filter: blur(30px) saturate(190%);
   backdrop-filter: blur(30px) saturate(190%);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -370,7 +376,7 @@ input[type="range"]::-webkit-slider-thumb {
   height: var(--mini-h); border-radius: 28px;
   display: flex; align-items: center; gap: 10px; padding: 0 6px 0 10px;
   z-index: 41; overflow: hidden;
-  background: rgba(38, 38, 40, 0.55);
+  background: rgba(30, 30, 32, 0.78);
   -webkit-backdrop-filter: blur(30px) saturate(190%);
   backdrop-filter: blur(30px) saturate(190%);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -625,8 +631,17 @@ input[type="range"]::-webkit-slider-thumb {
 .lib-select-btn { padding: 8px 14px; font-size: 13.5px; min-height: 34px; }
 .btn:disabled { opacity: 0.45; }
 
+/* Shell-level box for the selection bar: pinned to the bottom of the app, not
+   inside the scrolling list, so it can never be scrolled or clipped away. */
+#bulk-host {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  z-index: 45; pointer-events: none;
+}
+#bulk-host .bulk-bar { pointer-events: auto; }
+
 .bulk-bar {
-  position: fixed; left: 12px; right: 12px;
+  position: absolute; left: 12px; right: 12px;
+  background: rgba(30, 30, 32, 0.88);
   bottom: calc(var(--bar-bottom) + var(--nav-h) + 20px + var(--vv-lift, 0px));
   z-index: 45; border-radius: var(--glass-radius);
   display: flex; align-items: center; gap: 7px; padding: 8px 10px 8px 14px;
@@ -756,11 +771,18 @@ body.has-bulk.has-mini .toast {
    the status bar, and a short fade under it keeps rows from meeting it hard. */
 .lib-head {
   position: sticky;
-  top: calc(env(safe-area-inset-top, 0px) + 4px);
+  top: 0;
   z-index: 12;
   background: var(--bg);
-  padding: 8px 0 10px;
-  margin-top: -8px;
+  padding: 10px 0 10px;
+}
+/* The list scrolls in the full-height port, so a row can otherwise show in the
+   safe-area strip above the pinned header. This paints that strip solid. */
+.lib-head::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 100%;
+  height: calc(env(safe-area-inset-top, 0px) + 14px);
+  background: var(--bg);
+  pointer-events: none;
 }
 .lib-head::after {
   content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 12px;

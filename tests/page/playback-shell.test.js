@@ -1211,6 +1211,57 @@ async function dragTouch(page, fromY, toY) {
     });
   });
 
+  await check("the selection bar is a shell overlay, so the list can neither scroll nor paint over it", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      for (let i = 0; i < 24; i++) {
+        await Lyra.db.addTrack({
+          title: "Probe Song " + i, artist: "Probe Artist", album: "", duration: 100,
+          audio: base.audio, addedAt: Date.now() + i, plays: 0, liked: false, lyrics: "",
+        });
+      }
+      await Lyra.app.refreshData();
+      await Lyra.player.playQueue([Lyra.app.tracks[0].id], 0);
+      await new Promise((r) => setTimeout(r, 350));
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(300);
+    await page.click("#lib-select");
+    await page.waitForTimeout(250);
+    await page.click("#lib-body .song-row");
+    await page.waitForTimeout(250);
+
+    const out = await page.evaluate(async () => {
+      const bar = document.querySelector(".bulk-bar");
+      const before = bar.getBoundingClientRect();
+      document.getElementById("view").scrollTop = 700;
+      await new Promise((r) => setTimeout(r, 200));
+      const after = bar.getBoundingClientRect();
+      const x = Math.round(after.left + after.width / 2);
+      const y = Math.round(after.top + after.height / 2);
+      const at = document.elementFromPoint(x, y);
+      return {
+        parent: bar.parentElement.id,
+        siblingOfView: bar.parentElement.previousElementSibling && bar.parentElement.previousElementSibling.id,
+        sameBox: Math.abs(before.top - after.top) < 1 && Math.abs(before.bottom - after.bottom) < 1,
+        viewZ: getComputedStyle(document.getElementById("view")).zIndex,
+        navZ: getComputedStyle(document.querySelector(".nav")).zIndex,
+        miniZ: getComputedStyle(document.getElementById("mini")).zIndex,
+        hitBar: !!(at && at.closest(".bulk-bar")),
+      };
+    });
+    assert.equal(out.parent, "bulk-host", "the bar lives outside the scrolling list");
+    assert.equal(out.siblingOfView, "view", "it is a sibling of the list, inside the app shell");
+    assert.equal(out.sameBox, true, "scrolling the list does not move the bar");
+    assert.equal(out.viewZ, "0", "the list sits in its own stacking context");
+    assert.ok(Number(out.navZ) > Number(out.miniZ) && Number(out.miniZ) > 0, "the bars stack above it");
+    assert.equal(out.hitBar, true, "a tap over the bar reaches the bar, not the row behind it");
+
+    await page.evaluate(() => { document.getElementById("view").scrollTop = 0; document.getElementById("lib-select").click(); });
+    await page.waitForTimeout(200);
+  });
+
   await check("the selection's Edit button sets the artist and album for many songs", async () => {
     await seed(page, null);
     await page.evaluate(async () => {

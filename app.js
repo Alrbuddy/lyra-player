@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.23";
+  const APP_VERSION = "1.4.24";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -348,6 +348,7 @@
     shell.scrollTop = scrollByView[key] || 0;
     // A cached screen fades in but its rows are not rebuilt, so they stay put.
     playScreenIn(host, false);
+    syncBulkBar();
   }
 
   // Re-render the active view in place. Keeps the scroll offset unless asked
@@ -373,6 +374,7 @@
     // A selection bar is tall, and a toast must land above it rather than on
     // top of its buttons.
     document.body.classList.toggle("has-bulk", !!(selecting || plSelecting));
+    syncBulkBar();
     // Local updates (a checkbox, a saved edit) and player-driven redraws must
     // not replay the entrance: only an actual screen entry animates.
     if (!opts.keep && !opts.quiet) playScreenIn(host, opts.rows === true);
@@ -605,21 +607,6 @@
         : `<div class="empty"><div class="big">No artists yet</div><div class="small">An artist shows up once two or more of their songs are here.</div></div>`;
     }
 
-    const none = selected.size === 0;
-    const bulk = libFilter === "playlists"
-      ? (plSelecting
-        ? `<div class="bulk-bar glass">
-            <span id="bulk-count">${plSelected.size} selected</span>
-            <button class="btn danger" id="bulk-pl-del"${plSelected.size ? "" : " disabled"}>Delete</button>
-          </div>` : "")
-      : selecting
-      ? `<div class="bulk-bar glass">
-          <span id="bulk-count">${selected.size} selected</span>
-          <button class="btn ghost" id="bulk-add"${none ? " disabled" : ""}>Add to playlist</button>
-          <button class="btn ghost" id="bulk-edit"${none ? " disabled" : ""}>Edit</button>
-          <button class="btn danger" id="bulk-del"${none ? " disabled" : ""}>Delete</button>
-        </div>` : "";
-
     return `<div class="screen">
       <div class="row-between lib-head">
         <div style="display:flex;align-items:center;gap:10px;min-width:0">
@@ -649,7 +636,71 @@
         ? `<div class="az-strip" id="az-strip">${sortLetters(sortedTracks()).map((c) => `<button class="az-btn" data-letter="${c}">${c}</button>`).join("")}</div>`
         : ""}
       <div id="lib-body" class="${libGrid && libFilter === "songs" ? "tiles" : ""}">${body}</div>
-      ${bulk}</div>`;
+    </div>`;
+  }
+
+  // The selection bar lives in #shell (next to the mini player and tab bar),
+  // not inside the scrolling list. On iOS a position:fixed child of a momentum
+  // scroller can be dragged along with the content and clipped by it, which is
+  // why the bar went missing and rows kept appearing over the bottom bars.
+  function bulkBarHTML() {
+    if (libFilter === "playlists") {
+      if (!plSelecting) return "";
+      return `<div class="bulk-bar glass">
+        <span id="bulk-count">${plSelected.size} selected</span>
+        <button class="btn danger" id="bulk-pl-del"${plSelected.size ? "" : " disabled"}>Delete</button>
+      </div>`;
+    }
+    if (!selecting) return "";
+    const none = selected.size === 0;
+    return `<div class="bulk-bar glass">
+      <span id="bulk-count">${selected.size} selected</span>
+      <button class="btn ghost" id="bulk-add"${none ? " disabled" : ""}>Add to playlist</button>
+      <button class="btn ghost" id="bulk-edit"${none ? " disabled" : ""}>Edit</button>
+      <button class="btn danger" id="bulk-del"${none ? " disabled" : ""}>Delete</button>
+    </div>`;
+  }
+
+  function syncBulkBar() {
+    const host = $("#bulk-host");
+    if (!host) return;
+    const html = route.view === "library" ? bulkBarHTML() : "";
+    if (host._html !== html) {
+      host._html = html;
+      host.innerHTML = html;
+      bindBulkBar();
+    }
+    host.classList.toggle("hidden", !html);
+  }
+
+  function bindBulkBar() {
+    const bulkPlDel = $("#bulk-pl-del");
+    if (bulkPlDel) bulkPlDel.onclick = () => deletePlaylistsSheet([...plSelected]);
+    const bulkAdd = $("#bulk-add");
+    if (bulkAdd) bulkAdd.onclick = () => addToPlaylistSheet([...selected]);
+    const bulkEdit = $("#bulk-edit");
+    if (bulkEdit) bulkEdit.onclick = () => {
+      const chosen = [...selected].map((id) => tracks.find((t) => t.id === id)).filter(Boolean);
+      editInfoSheet(chosen);
+    };
+    const bulkDel = $("#bulk-del");
+    if (bulkDel) bulkDel.onclick = async () => {
+      const ok = await confirmSheet("Delete songs", `${selected.size} songs will be removed from this device.`, "Delete", true);
+      if (!ok) return;
+      for (const id of [...selected]) {
+        await db.deleteTrack(id);
+        if (artUrlCache.has(id)) { URL.revokeObjectURL(artUrlCache.get(id)); artUrlCache.delete(id); }
+        colorCache.delete(id);
+      }
+      for (const p of playlists) {
+        const filtered = p.trackIds.filter((x) => !selected.has(x));
+        if (filtered.length !== p.trackIds.length) { p.trackIds = filtered; await db.putPlaylist(p); }
+      }
+      selecting = false; selected.clear();
+      await refreshData();
+      render();
+      toast("Deleted");
+    };
   }
 
   // ---------- Import ----------
@@ -2306,8 +2357,6 @@
       // Hold a playlist to delete it; a normal tap still opens it.
       v.querySelectorAll("[data-hold-pl]").forEach((b) =>
         bindHold(b, () => deletePlaylistsSheet(Number(b.dataset.holdPl))));
-      const bulkPlDel = $("#bulk-pl-del");
-      if (bulkPlDel) bulkPlDel.onclick = () => deletePlaylistsSheet([...plSelected]);
       const sortBtn = $("#lib-sort");
       if (sortBtn) sortBtn.onclick = openSortSheet;
       const az = $("#az-strip");
@@ -2337,31 +2386,6 @@
           } else if (x === "imp") $("#file-input").click();
           else if (x === "res") $("#restore-input").click();
         }));
-      };
-      const bulkAdd = $("#bulk-add");
-      if (bulkAdd) bulkAdd.onclick = () => addToPlaylistSheet([...selected]);
-      const bulkEdit = $("#bulk-edit");
-      if (bulkEdit) bulkEdit.onclick = () => {
-        const chosen = [...selected].map((id) => tracks.find((t) => t.id === id)).filter(Boolean);
-        editInfoSheet(chosen);
-      };
-      const bulkDel = $("#bulk-del");
-      if (bulkDel) bulkDel.onclick = async () => {
-        const ok = await confirmSheet("Delete songs", `${selected.size} songs will be removed from this device.`, "Delete", true);
-        if (!ok) return;
-        for (const id of [...selected]) {
-          await db.deleteTrack(id);
-          if (artUrlCache.has(id)) { URL.revokeObjectURL(artUrlCache.get(id)); artUrlCache.delete(id); }
-          colorCache.delete(id);
-        }
-        for (const p of playlists) {
-          const filtered = p.trackIds.filter((x) => !selected.has(x));
-          if (filtered.length !== p.trackIds.length) { p.trackIds = filtered; await db.putPlaylist(p); }
-        }
-        selecting = false; selected.clear();
-        await refreshData();
-        render();
-        toast("Deleted");
       };
     }
 

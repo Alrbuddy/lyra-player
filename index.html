@@ -20,6 +20,10 @@
 
 <main id="view" aria-live="polite"></main>
 
+<!-- Multi-select bar: a sibling of #view, not a child, so it can never be
+     clipped or scrolled by the list and always floats above the mini player. -->
+<div id="bulk-host" class="hidden"></div>
+
 <!-- Mini player -->
 <div id="mini" class="mini glass hidden" role="button" tabindex="0" aria-label="Open now playing">
   <div class="mini-art" id="mini-art"></div>
