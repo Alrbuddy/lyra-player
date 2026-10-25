@@ -315,6 +315,104 @@ async function closeOverlays(page) {
     }, original);
   });
 
+  await check("auto-sync replaces lyrics it generated before", async () => {
+    await page.route("https://api.groq.com/**", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: "fresh words",
+        language: "en",
+        words: [{ word: "fresh", start: 0.2, end: 0.6 }, { word: "words", start: 0.8, end: 1.2 }],
+        segments: [],
+      }),
+    }));
+    const saved = await page.evaluate(async () => {
+      const id = Lyra.player.state().track.id;
+      const t = await Lyra.db.getTrack(id);
+      const keep = { lyrics: t.lyrics, synced: t.lyricsSynced, transcript: t.lyricsTranscript };
+      // What the old voting build left on the phone: its transcript, already
+      // turned into lyric lines, with a stray echo of the title in it.
+      t.lyrics = "Wxz FATSO WAR SCARS\nover my head";
+      t.lyricsTranscript = "Wxz FATSO WAR SCARS over my head";
+      t.lyricsSynced = {
+        lines: [{ t: 0, end: 2, text: "Wxz FATSO WAR SCARS" }, { t: 2, end: 4, text: "over my head" }],
+        matchRate: 1, source: "transcript",
+      };
+      await Lyra.db.putTrack(t);
+      await Lyra.app.refreshData();
+      return keep;
+    });
+    await page.evaluate(() => document.getElementById("llab-auto").click());
+    await page.waitForFunction(() => /words saved/.test((document.getElementById("llab-status") || {}).textContent || ""), null, { timeout: 15000 });
+    const after = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
+      return { lyrics: t.lyrics, status: document.getElementById("llab-status").textContent };
+    });
+    assert.match(after.lyrics, /fresh words/, "the new transcript became the lyrics");
+    assert.doesNotMatch(after.lyrics, /WAR SCARS/, "the old text is gone: " + after.lyrics);
+    assert.match(after.status, /lyrics synced/);
+    await page.unroute("https://api.groq.com/**");
+    await page.evaluate(async (keep) => {
+      const id = Lyra.player.state().track.id;
+      const t = await Lyra.db.getTrack(id);
+      t.lyrics = keep.lyrics;
+      t.lyricsSynced = keep.synced;
+      t.lyricsTranscript = keep.transcript;
+      await Lyra.db.putTrack(t);
+      await Lyra.app.refreshData();
+    }, saved);
+  });
+
+  await check("lyrics you wrote or edited yourself are never overwritten", async () => {
+    await page.route("https://api.groq.com/**", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: "machine words",
+        language: "en",
+        words: [{ word: "machine", start: 0.2, end: 0.6 }, { word: "words", start: 0.8, end: 1.2 }],
+        segments: [],
+      }),
+    }));
+    const saved = await page.evaluate(async () => {
+      const id = Lyra.player.state().track.id;
+      const t = await Lyra.db.getTrack(id);
+      const keep = { lyrics: t.lyrics, synced: t.lyricsSynced, transcript: t.lyricsTranscript };
+      t.lyrics = "my own line";
+      t.lyricsTranscript = "the machine transcript";
+      t.lyricsSynced = {
+        lines: [{ t: 0, end: 2, text: "my own line" }],
+        matchRate: 1, source: "transcript", editedAt: Date.now(),
+      };
+      await Lyra.db.putTrack(t);
+      await Lyra.app.refreshData();
+      return keep;
+    });
+    await page.evaluate(() => document.getElementById("llab-auto").click());
+    await page.waitForFunction(() => /words saved/.test((document.getElementById("llab-status") || {}).textContent || ""), null, { timeout: 15000 });
+    const after = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
+      return {
+        lyrics: t.lyrics,
+        status: document.getElementById("llab-status").textContent,
+        canAlign: !document.getElementById("llab-align").disabled,
+      };
+    });
+    assert.equal(after.lyrics, "my own line", "an edited line stays exactly as it was");
+    assert.doesNotMatch(after.status, /lyrics synced/, "the app did not claim to rewrite them");
+    assert.equal(after.canAlign, true, "Sync my lyrics is there to re-time them");
+    await page.unroute("https://api.groq.com/**");
+    await page.evaluate(async (keep) => {
+      const id = Lyra.player.state().track.id;
+      const t = await Lyra.db.getTrack(id);
+      t.lyrics = keep.lyrics;
+      t.lyricsSynced = keep.synced;
+      t.lyricsTranscript = keep.transcript;
+      await Lyra.db.putTrack(t);
+      await Lyra.app.refreshData();
+    }, saved);
+  });
+
   await check("a long song is sent as overlapping chunks and lands on the song's clock", async () => {
     const id = await addLongTrack(page, 60);
     let calls = 0;

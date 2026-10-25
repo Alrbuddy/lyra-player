@@ -729,6 +729,8 @@
         const mid = (w.start + w.end) / 2;
         if (mid < lo || mid >= hi) return;
         if (!w || !w.word) return;
+        // "🎵" and "♪" are the model marking music, not words to sing.
+        if (!/[\p{L}\p{N}]/u.test(w.word)) return;
         list.push({
           word: w.word,
           start: Number(w.start) || 0,
@@ -1069,6 +1071,19 @@
     return appTracks().find((t) => t.id === id) || null;
   }
 
+  /** Same words in the same order, ignoring line breaks and punctuation. */
+  function sameWords(a, b) {
+    const norm = (s) => String(s || "").toLowerCase()
+      .replace(/[^\p{L}\p{N}' ]+/gu, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    const x = norm(a);
+    const y = norm(b);
+    if (!x.length || x.length !== y.length) return false;
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+    return true;
+  }
+
   function hasTiming(t) {
     return !!(t && t.lyricsSynced && Array.isArray(t.lyricsSynced.lines) && t.lyricsSynced.lines.some((l) => l && l.t != null));
   }
@@ -1173,6 +1188,14 @@
       if (!out.words.length) throw new LlabError("empty", "Groq returned no words.");
       const fresh = findTrack(t.id) || t;
       const live = npTrack();
+      // Decide what the current lyrics are BEFORE the new transcript overwrites
+      // the old one — those two fields are what tell generated text apart from
+      // words someone wrote themselves.
+      const own = String(fresh.lyrics || "").trim();
+      const edited = !!(fresh.lyricsSynced && fresh.lyricsSynced.editedAt);
+      const fromTranscript = !!fresh.lyricsTranscript && sameWords(own, fresh.lyricsTranscript);
+      const hasOwnLyrics = !!own && (edited || !fromTranscript);
+      const keepEdited = hasOwnLyrics && fromTranscript;
       const base = {
         lyricsWords: out.words,
         lyricsTranscript: out.text,
@@ -1189,8 +1212,9 @@
       }
       if (live && live.id === fresh.id) Object.assign(live, base);
       // With no lyrics of your own, the transcript becomes the lyrics right
-      // away, already synced — no second tap.
-      const hasOwnLyrics = !!(fresh.lyrics && fresh.lyrics.trim());
+      // away, already synced — no second tap. Lyrics this feature generated
+      // itself are replaced on a re-run (that is how a fixed transcript
+      // reaches the screen), but anything you typed or edited stays yours.
       if (!hasOwnLyrics) {
         const lines = linesFromWords(out.words);
         const next = {
@@ -1214,7 +1238,11 @@
       } else {
         setStatus(out.words.length + " words saved" + (hasOwnLyrics ? "" : " · lyrics synced") + chunkNote + retryNote + lowNote, "ok");
       }
-      toast(hasOwnLyrics ? "Transcript saved — tap Sync my lyrics" : "Lyrics synced from the transcript");
+      toast(keepEdited
+        ? "Transcript updated — tap Sync my lyrics to re-time your edits"
+        : hasOwnLyrics
+          ? "Transcript saved — tap Sync my lyrics"
+          : "Lyrics synced from the transcript");
       mountNp();
       if (!hasOwnLyrics) refreshLyricsView();
     } catch (e) {
@@ -1987,6 +2015,7 @@
     parseLrc,
     toLrc,
     normalizeWord,
+    sameWords,
     tokenize,
     similarity,
     levenshtein,

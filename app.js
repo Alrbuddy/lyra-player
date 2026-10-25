@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.9";
+  const APP_VERSION = "1.4.10";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 

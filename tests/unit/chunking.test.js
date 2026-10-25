@@ -10,7 +10,26 @@ const {
   spreadSegmentWords,
   chunkScore,
   syllables,
+  sameWords,
 } = require("../../lyrics-sync.js");
+
+test("lyrics count as the same transcript across line breaks and punctuation", () => {
+  assert.equal(sameWords("One two, three\nFour", "one two three four"), true);
+  assert.equal(sameWords("🎵 One two\nthree", "One two three"), true, "a music mark is not a word");
+  assert.equal(sameWords("One two three", "One three two"), false, "order matters");
+  assert.equal(sameWords("One two", "One two three"), false, "a missing word is a different text");
+  assert.equal(sameWords("", "one two"), false);
+});
+
+test("a music mark is not kept as a lyric line", () => {
+  const words = finalizeWords([
+    { chunk: { start: 0, end: 28 }, words: [
+      { word: "🎵", start: 0.1, end: 0.3 },
+      { word: "real", start: 0.5, end: 0.8 },
+    ] },
+  ]);
+  assert.deepEqual(words.map((w) => w.word), ["real"]);
+});
 
 test("a 100 s song becomes four overlapping chunks that cover all of it", () => {
   const plan = chunkPlan(100);
