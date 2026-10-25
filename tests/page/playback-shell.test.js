@@ -2202,6 +2202,123 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(backed.shown.includes("detail"), false, "a swipe on a song page steps back a screen");
   });
 
+  console.log("\nLocked-screen handoff");
+
+  // Two two-second songs, and a page that claims the screen is off (which is
+  // what iOS renders as while the phone is locked). The samples are collected
+  // every frame so the test can see the state at the exact moment of the swap.
+  async function lockFixture(page) {
+    return page.evaluate(async () => {
+      await Lyra.db.clearAll();
+      const sr = 8000, frames = sr * 2;
+      const buf = new ArrayBuffer(44 + frames * 2);
+      const dv = new DataView(buf);
+      const ws = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+      ws(0, "RIFF"); dv.setUint32(4, 36 + frames * 2, true); ws(8, "WAVE"); ws(12, "fmt ");
+      dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+      dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true);
+      dv.setUint16(34, 16, true); ws(36, "data"); dv.setUint32(40, frames * 2, true);
+      const blob = new Blob([buf], { type: "audio/wav" });
+      const mk = (title, at) => Lyra.db.addTrack({
+        title, artist: "Lock Test", album: "", duration: 2, audio: blob,
+        addedAt: at, plays: 0, liked: false, lyrics: "",
+      });
+      const a = await mk("Locked A", Date.now());
+      const b = await mk("Locked B", Date.now() + 5);
+      await Lyra.app.refreshData();
+      return [a, b];
+    });
+  }
+
+  async function screenOff(page, off) {
+    await page.evaluate((off) => {
+      if (off) {
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+      } else {
+        delete document.hidden;
+        delete document.visibilityState;
+      }
+    }, off);
+  }
+
+  await check("with the screen off the next song starts before the audio goes quiet", async () => {
+    const ids = await lockFixture(page);
+    await page.evaluate(() => {
+      window.__frames = [];
+      window.__stopFrames = false;
+      const tick = () => {
+        const st = Lyra.player.state();
+        const el = Lyra.player.audio;
+        if (st.track) window.__frames.push({ id: st.track.id, t: el.currentTime, ended: el.ended, paused: el.paused });
+        if (!window.__stopFrames) requestAnimationFrame(tick);
+      };
+      tick();
+    });
+    await screenOff(page, true);
+    await page.evaluate((ids) => Lyra.player.playQueue(ids, 0), ids);
+    const switched = await page.evaluate((ids) => new Promise((resolve) => {
+      const t0 = performance.now();
+      const tick = () => {
+        if (Lyra.player.state().track.id === ids[1]) return resolve(true);
+        if (performance.now() - t0 > 7000) return resolve(false);
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }), ids);
+    await page.waitForTimeout(450);
+    const out = await page.evaluate((ids) => {
+      const frames = window.__frames || [];
+      window.__stopFrames = true;
+      const lastA = [...frames].reverse().find((f) => f.id === ids[0]) || null;
+      const el = Lyra.player.audio;
+      return {
+        lastA, n: frames.length,
+        playing: !el.paused, t: el.currentTime, track: Lyra.player.state().track.id,
+      };
+    }, ids);
+    await screenOff(page, false);
+    await page.evaluate(() => Lyra.player.stop());
+    assert.equal(switched, true, "the queue moved on with the screen off");
+    assert.ok(out.lastA, "the first song was playing (" + out.n + " frames)");
+    assert.equal(out.lastA.ended, false, "the swap happened before the element reached `ended`");
+    assert.equal(out.lastA.paused, false, "sound was still coming out of the first song when it swapped");
+    assert.ok(out.lastA.t <= 1.75, "handoff was early enough to keep the session alive: " + out.lastA.t + "s of 2s");
+    assert.ok(out.lastA.t >= 1.0, "and not absurdly early: " + out.lastA.t + "s");
+    assert.equal(out.track, ids[1], "the next song is the loaded one");
+    assert.equal(out.playing, true, "it is playing, not parked on silence");
+    assert.ok(out.t > 0, "and its clock is moving");
+  });
+
+  await check("waking the phone moves a finished song on at once", async () => {
+    const ids = await lockFixture(page);
+    await page.evaluate((ids) => Lyra.player.playQueue(ids, 0), ids);
+    await page.waitForTimeout(450);
+    await screenOff(page, true);
+    const parked = await page.evaluate(async () => {
+      const el = Lyra.player.audio;
+      el.pause();
+      el.currentTime = Math.max(0, el.duration - 0.03);
+      await new Promise((r) => setTimeout(r, 150));
+      return { ended: el.ended, t: el.currentTime, dur: el.duration };
+    });
+    assert.equal(parked.ended, false, "the element is parked at the very end with no `ended` event (what a suspended page leaves behind)");
+    const ms = await page.evaluate((ids) => new Promise((resolve) => {
+      const t0 = performance.now();
+      delete document.hidden;
+      delete document.visibilityState;
+      document.dispatchEvent(new Event("visibilitychange"));
+      const tick = () => {
+        if (Lyra.player.state().track.id === ids[1]) return resolve(Math.round(performance.now() - t0));
+        if (performance.now() - t0 > 2500) return resolve(-1);
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }), ids);
+    await page.evaluate(() => Lyra.player.stop());
+    assert.ok(ms >= 0 && ms < 800, "the queue moved within a frame or two of waking (" + ms + " ms)");
+  });
+
   console.log("\nMotion");
   await check("a press ripples from the finger and still plays the row", async () => {
     await seed(page, null);

@@ -43,6 +43,20 @@
   // the new song's start point.
   let awaitingMeta = false;
 
+  /* iOS keeps a web app alive only while its audio is making sound. `ended` is
+     queued after the element has stopped, so on a locked phone the page can be
+     suspended before the handler runs: the song finishes, nothing advances, and
+     the queue only moves when you unlock. So while the screen is off the handoff
+     happens PRE_END before the last sample — inside audio that is still playing —
+     with the next song's record already read from IndexedDB. */
+  const PRE_END = 0.6;
+  let preEndTimer = 0;
+  let preEndAt = -1;
+  let prepared = null;     // { id, track } — next song, ready to swap in
+  // Right after a source swap the element briefly reports the previous song's
+  // clock, which would read as "this song has ended" and skip one too far.
+  let ignoreEndsUntil = 0;
+
   const artUrls = new Map(); // track id -> object URL, kept for Media Session artwork
 
   function currentId() {
@@ -208,6 +222,8 @@
 
   async function loadTrack(track, autoplay) {
     const token = ++loadToken;
+    ignoreEndsUntil = performance.now() + 400;
+    disarmPreEnd();
     endHandled = false;
     errorRetries = 0;
     awaitingMeta = !!track;
@@ -237,6 +253,7 @@
       const ok = await startPlayback(token);
       if (!ok && token === loadToken) await emergencyRestart(token);
     }
+    if (token === loadToken) prepareUpcoming();
     return true;
   }
 
@@ -293,6 +310,141 @@
     return keepFirstId != null ? [keepFirstId, ...rest] : rest;
   }
 
+  /* ---------------------------------------------------- hidden handoff */
+  function queueUpcoming() {
+    if (!queue.length || index < 0 || repeat === "one") return null;
+    if (index + 1 < queue.length) return { id: queue[index + 1], index: index + 1 };
+    return { id: queue[0], index: 0 };
+  }
+
+  // Read the next record now, so the swap itself never waits on IndexedDB in the
+  // one silent moment iOS needs to suspend the page.
+  async function prepareUpcoming() {
+    const up = queueUpcoming();
+    if (!up) { prepared = null; return null; }
+    if (prepared && prepared.id === up.id) return prepared;
+    prepared = null;
+    try {
+      const track = await window.Lyra.db.getTrack(up.id);
+      const still = queueUpcoming();
+      if (!track || !track.audio || !still || still.id !== up.id) return null;
+      prepared = { id: up.id, track };
+      return prepared;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // The song's own end: its trimmed end point, or the end of the file.
+  function endPoint() {
+    const trimmed = endOf(current);
+    if (trimmed > 0) return trimmed;
+    return audio && Number.isFinite(audio.duration) ? audio.duration : 0;
+  }
+
+  function disarmPreEnd() {
+    if (preEndTimer) { clearTimeout(preEndTimer); preEndTimer = 0; }
+    preEndAt = -1;
+  }
+
+  function armPreEnd() {
+    if (!current) { disarmPreEnd(); return; }
+    const end = endPoint();
+    if (!(end > 0)) return;
+    const at = Math.max(0, end - PRE_END);
+    const now = (audio && audio.currentTime) || 0;
+    const left = at - now;
+    if (left <= 0) { disarmPreEnd(); return; }
+    if (preEndTimer && Math.abs(preEndAt - at) < 0.35) return;
+    disarmPreEnd();
+    preEndAt = at;
+    preEndTimer = setTimeout(runPreEnd, left * 1000 + 20);
+    prepareUpcoming();
+  }
+
+  function runPreEnd() {
+    preEndTimer = 0;
+    preEndAt = -1;
+    if (!current || !audio || audio.paused || endHandled || endingSegment) return;
+    if (!document.hidden) return; // screen on: let the song finish naturally
+    handOffHidden();
+  }
+
+  // Move to the next song while the current one is still audible. Everything
+  // here is synchronous through play(), so the audio session never lapses.
+  function handOffHidden() {
+    if (!current || !audio || endHandled || endingSegment) return;
+    if (repeat === "one") {
+      // Nothing to swap: loop from the top without a silent gap.
+      try { audio.currentTime = startOf(current); } catch (e) { return; }
+      endHandled = false;
+      lastTick = audio.currentTime || 0;
+      disarmPreEnd();
+      armPreEnd();
+      return;
+    }
+    const up = queueUpcoming();
+    if (!up) return;
+    if (!prepared || prepared.id !== up.id) {
+      // Not read yet (a very fresh queue): take the normal path, which fetches
+      // the track first. Late beats parked on a finished song.
+      finishSegment();
+      return;
+    }
+    const track = prepared.track;
+    prepared = null;
+    let url;
+    try {
+      url = URL.createObjectURL(track.audio);
+    } catch (e) {
+      finishSegment();
+      return;
+    }
+    const old = currentUrl;
+    const token = ++loadToken;
+    endHandled = false;
+    errorRetries = 0;
+    awaitingMeta = true;
+    playCounted = false;
+    startedFor = null;
+    playedSeconds = 0;
+    lastTick = 0;
+    index = up.index;
+    current = track;
+    currentUrl = url;
+    track.artUrl = artUrlFor(track);
+    ignoreEndsUntil = performance.now() + 400;
+    disarmPreEnd();
+    // No pause() first: the new source replaces the old and play() runs in this
+    // same task, so sound never stops and iOS never sees an idle audio session.
+    audio.src = url;
+    audio.addEventListener("loadedmetadata", seekToStart, { once: true });
+    updateMediaSession(track);
+    revokeSoon(old);
+    emit("track", track);
+    emit("queue", state());
+    emit("time", state());
+    startPlayback(token).then((ok) => {
+      if (token !== loadToken) return;
+      if (!ok) emergencyRestart(token);
+      else emit("state", state());
+    });
+  }
+
+  // If the page was suspended anyway (a gap in the audio, a dead session), move
+  // on the moment we are back instead of waiting for the one-second watchdog.
+  function catchUpAfterSleep() {
+    if (!current || document.hidden || endHandled || endingSegment) return;
+    const end = endPoint();
+    const now = (audio && audio.currentTime) || 0;
+    if (!(audio.ended || (end > 0 && now >= end - 0.05))) { armPreEnd(); return; }
+    endHandled = false;
+    handleEnded();
+  }
+  document.addEventListener("visibilitychange", catchUpAfterSleep);
+  window.addEventListener("pageshow", catchUpAfterSleep);
+  window.addEventListener("focus", catchUpAfterSleep);
+
   /* ------------------------------------------------------- element wiring */
   function attachAudioHandlers(el) {
     el.preload = "auto";
@@ -308,6 +460,8 @@
     el.addEventListener("playing", () => {
       if (el !== audio) return;
       if (current) markStarted(current);
+      disarmPreEnd();
+      armPreEnd();
     });
     el.addEventListener("pause", () => {
       if (el !== audio) return;
@@ -326,12 +480,18 @@
       lastTick = now;
       if (playedSeconds >= 30) countPlay();
       emit("time", state());
-      const end = endOf(current);
-      if (end > 0 && !el.paused && now >= end - 0.06) finishSegment();
+      const end = endPoint();
+      if (end > 0 && !el.paused && performance.now() >= ignoreEndsUntil) {
+        if (now >= end - 0.06) finishSegment();
+        else if (document.hidden && now >= end - PRE_END) handOffHidden();
+      }
+      armPreEnd();
     });
     el.addEventListener("seeked", () => {
       if (el !== audio) return;
       lastTick = el.currentTime || 0;
+      disarmPreEnd();
+      armPreEnd();
     });
     el.addEventListener("durationchange", () => {
       if (el !== audio) return;
@@ -339,6 +499,7 @@
     });
     el.addEventListener("ended", () => {
       if (el !== audio) return;
+      disarmPreEnd();
       handleEnded();
     });
     el.addEventListener("error", () => {
@@ -509,6 +670,8 @@
     // like "this song is already loaded".
     stop() {
       ++loadToken;
+      disarmPreEnd();
+      prepared = null;
       endHandled = true;
       awaitingMeta = false;
       try { audio.pause(); } catch (e) { /* nothing playing */ }
