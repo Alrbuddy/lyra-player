@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.17";
+  const APP_VERSION = "1.4.18";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -56,10 +56,45 @@
     return artUrlCache.get(track.id);
   }
 
+  // Most downloaded files carry no artwork, and a wall of identical grey boxes
+  // reads as broken. Instead every cover-less song gets its own sleeve: the
+  // first letter of its title over a deep gradient picked from that title, so
+  // one track always looks the same and a list looks like a row of records.
+  // The letter lives in an SVG so it scales with the box at any size.
+  const PH_PALETTE = [
+    ["#1d4d38", "#0e1512", "#1ed760"],
+    ["#16414a", "#0c1416", "#35d6c4"],
+    ["#242d52", "#0e1119", "#7c8cff"],
+    ["#3a2450", "#130f1c", "#b47cff"],
+    ["#4a3520", "#16110b", "#f0a94e"],
+    ["#4a2433", "#170f13", "#ff7a9a"],
+    ["#2b3a42", "#0e1315", "#9fb4be"],
+    ["#33401f", "#11140d", "#b8d96a"],
+  ];
+  function seedOf(text) {
+    let h = 0;
+    const s = String(text || "");
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return h;
+  }
+  function monogram(name) {
+    const m = String(name || "").match(/[a-z0-9]/i);
+    return m ? m[0].toUpperCase() : "?";
+  }
+  function phHTML(name, style) {
+    const seed = seedOf(name) % PH_PALETTE.length;
+    const p = PH_PALETTE[seed];
+    const s = style ? style.replace(/\s*;?\s*$/, ";") : "";
+    return `<div class="art-ph" data-ph="${seed}" style="${s}--ph-a:${p[0]};--ph-b:${p[1]};--ph-t:${p[2]}">` +
+      `<svg class="ph-glyph" viewBox="0 0 100 100" aria-hidden="true">` +
+      `<text x="50" y="50" dy="0.34em" text-anchor="middle" font-size="44" font-weight="800" letter-spacing="-2" fill="rgba(255,255,255,.9)">${esc(monogram(name))}</text>` +
+      `</svg></div>`;
+  }
+
   function artHTML(track, style) {
     const u = artUrl(track);
     if (u) return `<img class="art" style="${style || ""}" src="${u}" alt="" draggable="false">`;
-    return `<div class="art-ph" style="${style || ""}">${NOTE_SVG}</div>`;
+    return phHTML(track && track.title, style);
   }
 
   const colorCache = new Map();
@@ -363,7 +398,7 @@
     const tiles = [`<button class="tile" data-detail-kind="liked" data-detail-val="">${likedTile()}<span class="tile-name">Liked Songs</span></button>`]
       .concat(recentPlaylists.map((p) => {
         const cover = tracks.find((t) => p.trackIds.includes(t.id) && t.art);
-        return `<button class="tile" data-detail-kind="playlist" data-detail-val="${p.id}">${cover ? artHTML(cover, "width:56px;height:56px;border-radius:8px 0 0 8px") : `<div class="art-ph" style="width:56px;height:56px;border-radius:8px 0 0 8px">${NOTE_SVG}</div>`}<span class="tile-name">${esc(p.name)}</span></button>`;
+        return `<button class="tile" data-detail-kind="playlist" data-detail-val="${p.id}">${cover ? artHTML(cover, "width:56px;height:56px;border-radius:8px 0 0 8px") : phHTML(p.name, "width:56px;height:56px;border-radius:8px 0 0 8px")}<span class="tile-name">${esc(p.name)}</span></button>`;
       })).join("");
 
     const recentPlayed = tracks.filter((t) => t.lastPlayedAt).sort((a, b) => b.lastPlayedAt - a.lastPlayedAt).slice(0, 10);
@@ -520,7 +555,7 @@
           : `data-detail-kind="playlist" data-detail-val="${p.id}" data-hold-pl="${p.id}"`;
         return `<button class="tile press" style="width:100%;margin-bottom:8px" ${attrs}>
           ${plSelecting ? `<span class="checkbox${on ? " on" : ""}" style="margin-left:12px"></span>` : ""}
-          ${cover ? artHTML(cover, "width:56px;height:56px;border-radius:8px 0 0 8px") : `<div class="art-ph" style="width:56px;height:56px;border-radius:8px 0 0 8px">${NOTE_SVG}</div>`}
+          ${cover ? artHTML(cover, "width:56px;height:56px;border-radius:8px 0 0 8px") : phHTML(p.name, "width:56px;height:56px;border-radius:8px 0 0 8px")}
           <span class="tile-name">${esc(p.name)}</span><span class="dim" style="margin-left:auto;padding-right:10px;font-weight:400">${p.trackIds.length} songs</span></button>`;
       }).join("");
       body = `<button class="tile" style="width:100%;margin-bottom:8px" data-detail-kind="liked" data-detail-val="">${likedTile()}<span class="tile-name">Liked Songs</span></button>` +
@@ -1094,7 +1129,9 @@
     if (withArt.length >= 4) {
       cover.innerHTML = `<div class="collage">${withArt.slice(0, 4).map((t) => artHTML(t)).join("")}</div>`;
     } else {
-      cover.innerHTML = artHTML(withArt[0] || d.list[0]);
+      const first = withArt[0] || d.list[0];
+      // An empty playlist has no song to borrow: use its own name.
+      cover.innerHTML = first ? artHTML(first) : phHTML(d.title);
     }
     const c = await dominantColor(withArt[0] || d.list[0]);
     const hero = cover.closest(".detail-hero");

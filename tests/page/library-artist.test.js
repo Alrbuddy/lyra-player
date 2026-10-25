@@ -217,6 +217,58 @@ async function subtitle(page, id) {
     assert.equal(await subtitle(page, b.id), "YFG Fatso", "row clean again too");
   });
 
+  console.log("\nCover placeholders");
+  await check("a cover-less song and playlist each get a monogram sleeve", async () => {
+    await seed(page, [
+      { title: "War Scars", artist: "YFG Fatso", album: "" },
+      { title: "Mixed Emotions", artist: "YFG Fatso", album: "" },
+    ]);
+    await page.evaluate(async () => {
+      const ids = Lyra.app.tracks.map((t) => t.id);
+      await Lyra.db.addPlaylist({ name: "Late Night", trackIds: ids, createdAt: Date.now() });
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await tab(page, "songs");
+    const rows = await page.evaluate(() => [...document.querySelectorAll("#lib-body .song-row .art-ph")].map((el) => {
+      const r = el.getBoundingClientRect();
+      const glyph = el.querySelector(".ph-glyph text");
+      const box = glyph.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      return {
+        letter: glyph.textContent,
+        w: Math.round(r.width), h: Math.round(r.height),
+        letterH: Math.round(box.height),
+        fits: box.left >= r.left - 1 && box.right <= r.right + 1 && box.top >= r.top - 1 && box.bottom <= r.bottom + 1,
+        a: cs.getPropertyValue("--ph-a").trim(),
+        b: cs.getPropertyValue("--ph-b").trim(),
+        glyphW: Math.round(el.querySelector(".ph-glyph").getBoundingClientRect().width),
+      };
+    }));
+    assert.equal(rows.length, 2, "both songs draw a placeholder");
+    assert.deepEqual(rows.map((r) => r.letter).sort(), ["M", "W"], "each shows the first letter of its title");
+    assert.ok(rows.every((r) => r.fits), "the letter sits inside the 48px tile");
+    assert.ok(rows.every((r) => r.letterH >= r.h * 0.28), "and is big enough to read: " + rows.map((r) => r.letterH));
+    assert.ok(rows.every((r) => r.a && r.b && r.a !== r.b), "each tile carries a real two-tone palette");
+    assert.notEqual(rows[0].a, rows[1].a, "different titles get different sleeves");
+    assert.equal(rows[0].glyphW, rows[0].w, "the glyph fills its tile");
+
+    await tab(page, "playlists");
+    const pl = await page.evaluate(() => {
+      const el = document.querySelector('#lib-body .tile .art-ph');
+      const r = el.getBoundingClientRect();
+      const box = el.querySelector(".ph-glyph text").getBoundingClientRect();
+      return {
+        letter: el.querySelector(".ph-glyph text").textContent,
+        w: Math.round(r.width), h: Math.round(r.height),
+        fits: box.left >= r.left - 1 && box.right <= r.right + 1 && box.top >= r.top - 1 && box.bottom <= r.bottom + 1,
+      };
+    });
+    assert.equal(pl.letter, "L", "a cover-less playlist shows its own initial");
+    assert.equal(pl.w, 56);
+    assert.equal(pl.fits, true, "inside the 56px tile");
+  });
+
   console.log("\nArtist shelf");
   await check("a single-song artist has no row until a second song joins", async () => {
     await seed(page, [

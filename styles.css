@@ -165,18 +165,30 @@ input, textarea { user-select: text; -webkit-user-select: text; font: inherit; }
 
 /* ---- Art ---- */
 .art { object-fit: cover; display: block; background: var(--surface2); }
+/* A cover-less item is its own little sleeve: a deep two-tone gradient (picked
+   in app.js from the title, so it is stable) with the item's initial on top.
+   The letter is SVG text, so it scales cleanly from a 40px mini player to a
+   340px cover without any size maths. A flat gradient bands on the big cover,
+   so the tint is radial and dithered with a whisper of noise. */
 .art-ph {
+  position: relative; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
-  background-color: #1b1b1b;
-  /* A flat dark gradient bands into visible diagonal streaks once it is
-     stretched to a 340px cover, so the tint is radial + dithered with a
-     whisper of noise. */
+  background-color: var(--ph-b, #1b1b1b);
   background-image:
-    radial-gradient(125% 125% at 32% 18%, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0) 62%),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
-  background-size: auto, 96px 96px;
+    radial-gradient(85% 75% at 26% 12%, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0) 62%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E"),
+    linear-gradient(150deg, var(--ph-a, #262626) 0%, var(--ph-b, #141414) 82%);
+  background-size: auto, 96px 96px, auto;
 }
-.art-ph svg { width: 42%; height: 42%; fill: var(--accent); opacity: 0.9; }
+/* A soft glow of the palette's accent in the opposite corner. */
+.art-ph::before {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(62% 62% at 80% 86%, var(--ph-t, transparent), rgba(0, 0, 0, 0) 72%);
+  opacity: 0.3;
+}
+.art-ph > svg { position: relative; width: 42%; height: 42%; fill: var(--accent); opacity: 0.9; }
+.art-ph > svg.ph-glyph { width: 100%; height: 100%; fill: none; opacity: 1; }
+.art-ph .ph-glyph text { font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
 .art-heart {
   display: flex; align-items: center; justify-content: center;
   background: linear-gradient(135deg, #4b1bd9, #1db954 130%);
