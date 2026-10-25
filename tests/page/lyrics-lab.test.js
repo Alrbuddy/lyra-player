@@ -237,7 +237,10 @@ async function closeOverlays(page) {
   });
 
   await check("auto-sync turns the transcript into synced lyrics when there are none", async () => {
-    await page.route("https://api.groq.com/**", (route) => route.fulfill({
+    let calls = 0;
+    await page.route("https://api.groq.com/**", (route) => {
+      calls++;
+      return route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
@@ -251,7 +254,8 @@ async function closeOverlays(page) {
         ],
         segments: [],
       }),
-    }));
+      });
+    });
     // Start from a song with no lyrics of its own, like a fresh download —
     // keeping the fixture so the later lyrics-view checks still have 12 lines.
     const original = await page.evaluate(async () => {
@@ -281,6 +285,8 @@ async function closeOverlays(page) {
     assert.ok(out.lines >= 2, "a pause splits the lines, got " + out.lines);
     assert.equal(out.source, "transcript");
     assert.equal(out.alignEnabled, true, "Sync my lyrics is usable once words exist");
+    assert.equal(calls, 3, "three passes were sent, not one");
+    assert.match(out.status, /3 passes/, "the status reports the passes: " + out.status);
     await page.unroute("https://api.groq.com/**");
     await page.evaluate(async (saved) => {
       const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
@@ -290,6 +296,74 @@ async function closeOverlays(page) {
       await Lyra.db.putTrack(t);
       await Lyra.app.refreshData();
     }, original);
+  });
+
+  await check("a word one pass misheard is outvoted by the other two", async () => {
+    let calls = 0;
+    await page.route("https://api.groq.com/**", (route) => {
+      calls++;
+      // First pass mishears it; the two after it agree on the right word.
+      const third = calls === 1 ? "agane" : "again";
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          text: "hello there " + third + " now",
+          language: "en",
+          words: [
+            { word: "hello", start: 0.2, end: 0.6 },
+            { word: "there", start: 0.6, end: 1.0 },
+            { word: third, start: 2.4, end: 2.8 },
+            { word: "now", start: 2.8, end: 3.2 },
+          ],
+          segments: [],
+        }),
+      });
+    });
+    const original = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
+      const saved = { lyrics: t.lyrics, synced: t.lyricsSynced };
+      t.lyrics = "";
+      t.lyricsSynced = null;
+      t.lyricsWords = null;
+      t.lyricsConsensus = null;
+      await Lyra.db.putTrack(t);
+      await Lyra.app.refreshData();
+      return saved;
+    });
+    await page.evaluate(() => document.getElementById("llab-auto").click());
+    await page.waitForFunction(() => /words saved/.test((document.getElementById("llab-status") || {}).textContent || ""), null, { timeout: 20000 });
+    const out = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
+      return {
+        words: (t.lyricsWords || []).map((w) => w.word),
+        consensus: t.lyricsConsensus || null,
+        status: document.getElementById("llab-status").textContent,
+        lyrics: t.lyrics,
+      };
+    });
+    // Put the fixture back before asserting, so a failed assertion cannot
+    // leave the transcript in place for every later check.
+    await page.unroute("https://api.groq.com/**");
+    await page.evaluate(async (saved) => {
+      const t = await Lyra.db.getTrack(Lyra.player.state().track.id);
+      t.lyrics = saved.lyrics;
+      t.lyricsSynced = saved.synced;
+      t.lyricsWords = null;
+      t.lyricsConsensus = null;
+      await Lyra.db.putTrack(t);
+      await Lyra.app.refreshData();
+    }, original);
+    assert.equal(out.words.join(" "), "hello there again now", "the two matching passes won: " + out.words.join(" "));
+    assert.equal(calls, 3);
+    assert.equal(out.consensus.passes, 3);
+    assert.equal(out.consensus.fixed, 1, "the misheard word was corrected automatically");
+    assert.ok(out.consensus.agreement < 1);
+    assert.equal(out.consensus.conflicts, 1);
+    assert.match(out.status, /auto-corrected/);
+    assert.match(out.lyrics, /hello there/, "lyrics built from the merged words");
+    assert.match(out.lyrics, /again now/);
+    assert.equal(/agane/.test(out.lyrics), false, "the misheard spelling is gone");
   });
 
   await check("lyrics view gets the toolbar and timed lines", async () => {
