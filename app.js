@@ -740,12 +740,26 @@
   }
 
   async function checkForUpdates() {
-    if ("serviceWorker" in navigator) {
-      try {
-        const reg = await navigator.serviceWorker.getRegistration();
-        if (reg) await reg.update();
-      } catch (e) { /* offline — the reload below still retries */ }
-    }
+    if (!("serviceWorker" in navigator)) { location.reload(); return; }
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) {
+        await reg.update();
+        // Reloading while the new worker is still installing serves the old
+        // cache again, so one tap seemed to do nothing. Wait for it to take
+        // over (bounded, so an offline phone still reloads).
+        const pending = reg.installing || reg.waiting;
+        if (pending && pending.state !== "activated") {
+          await new Promise((resolve) => {
+            const done = () => resolve();
+            pending.addEventListener("statechange", () => {
+              if (pending.state === "activated" || pending.state === "redundant") done();
+            });
+            setTimeout(done, 5000);
+          });
+        }
+      }
+    } catch (e) { /* offline — the reload below still retries */ }
     location.reload();
   }
 
