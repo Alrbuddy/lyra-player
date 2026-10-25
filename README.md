@@ -5,7 +5,7 @@ A personal, fully offline music player PWA for iPhone. Dark Spotify-style layout
 ## Features
 
 - **Import from the Files app** — MP3, M4A, WAV, FLAC, AAC, OGG. ID3 tags and cover art are read automatically (jsmediatags, vendored), with a filename fallback.
-- **Playback** — lock-screen controls via the Media Session API, queue with shuffle and repeat (off/all/one), "play next", play counts.
+- **Playback** — lock-screen controls via the Media Session API, a queue that always keeps playing (loop the list or loop one song, shuffled or in order, never dead-ends), "play next", play counts.
 - **Lyrics** — paste lyrics for any song. Never auto-scrolls unless you turn it on (optional speed slider). LRC `[mm:ss.xx]` timestamps highlight the current line while playing.
 - **Library** — Home, Search (songs, albums, artists, playlists, and lyrics text), Your Library with playlists, likes, and multi-select, Import, Settings.
 - **Backup** — export metadata, lyrics, playlists, likes, and play counts as JSON (audio not included). Restore merges by title + artist + duration.

@@ -565,10 +565,10 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(out.playing, true, "and it is playing, not paused at the end");
   });
 
-  await check("a single-song queue ends instead of looping forever", async () => {
-    const id = await page.evaluate(() => {
+  await check("a single-song queue starts over instead of going quiet", async () => {
+    const id = await page.evaluate(async () => {
       const id = Lyra.app.tracks[0].id;
-      Lyra.player.playQueue([id], 0);
+      await Lyra.player.playQueue([id], 0);
       return id;
     });
     await page.waitForTimeout(500);
@@ -577,15 +577,23 @@ async function dragTouch(page, fromY, toY) {
     const out = await page.evaluate((id) => ({
       same: Lyra.player.state().track.id === id,
       playing: Lyra.player.state().playing,
-      ended: Lyra.player.audio.ended,
+      t: Lyra.player.audio.currentTime,
     }), id);
-    assert.equal(out.same, true, "it did not restart the same song");
-    assert.equal(out.playing, false);
-    assert.equal(out.ended, true);
+    assert.equal(out.same, true, "it is still the same song");
+    assert.equal(out.playing, true, "and playing again rather than paused at the end");
+    assert.ok(out.t < 5, "from the top, at " + Math.round(out.t) + "s");
   });
 
-  await check("with repeat off a finished list stops at the end", async () => {
-    await page.evaluate(() => { while (Lyra.player.state().repeat !== "off") Lyra.player.cycleRepeat(); });
+  await check("the repeat button only loops the list or the song, and the end never stops", async () => {
+    const states = await page.evaluate(() => {
+      const seen = [];
+      for (let i = 0; i < 4; i++) seen.push(Lyra.player.cycleRepeat());
+      while (Lyra.player.state().repeat !== "all") Lyra.player.cycleRepeat();
+      return seen;
+    });
+    assert.equal(states.includes("off"), false, "there is no 'off' state to stop playback: " + states);
+    assert.deepEqual([...new Set(states)].sort(), ["all", "one"], "just loop and loop-one");
+
     const ids = await page.evaluate(() => Lyra.player.state().queue.slice());
     await page.evaluate((ids) => Lyra.player.playQueue(ids, ids.length - 1), ids);
     await page.waitForTimeout(500);
@@ -593,14 +601,55 @@ async function dragTouch(page, fromY, toY) {
     await page.waitForTimeout(3500);
     const out = await page.evaluate((ids) => ({
       id: Lyra.player.state().track.id,
-      last: ids[ids.length - 1],
+      first: ids[0],
       playing: Lyra.player.state().playing,
-      ended: Lyra.player.audio.ended,
     }), ids);
-    assert.equal(out.id, out.last, "it stayed on the last song");
-    assert.equal(out.playing, false, "and stopped instead of starting again");
-    assert.equal(out.ended, true, "the song ran to its end");
-    await page.evaluate(() => { while (Lyra.player.state().repeat !== "all") Lyra.player.cycleRepeat(); });
+    assert.equal(out.id, out.first, "the last song wrapped to the first one");
+    assert.equal(out.playing, true, "and kept playing instead of pausing");
+  });
+
+  await check("with shuffle on, the end of the queue deals another song", async () => {
+    await seed(page, null);
+    const size = await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      for (const title of ["Shuffle Two", "Shuffle Three", "Shuffle Four"]) {
+        await Lyra.db.addTrack({
+          title, artist: base.artist, album: "", duration: 100,
+          audio: base.audio, addedAt: Date.now() + Math.random(), plays: 0, liked: false, lyrics: "",
+        });
+      }
+      await Lyra.app.refreshData();
+      const ids = Lyra.app.tracks.map((t) => t.id);
+      await Lyra.player.playQueue(ids, 0, { shuffle: true });
+      const q = Lyra.player.state().queue.slice();
+      await Lyra.player.playAt(q.length - 1);
+      return q.length;
+    });
+    assert.equal(size, 4, "four songs shuffled");
+    await page.waitForTimeout(500);
+    const last = await page.evaluate(() => Lyra.player.state().track.id);
+    await page.evaluate(() => Lyra.player.seek(Lyra.player.state().duration - 0.35));
+    const out = await page.evaluate((last) => new Promise((resolve) => {
+      const t0 = performance.now();
+      const tick = () => {
+        const st = Lyra.player.state();
+        if (st.track && st.track.id !== last) {
+          return resolve({ id: st.track.id, playing: st.playing, queue: st.queue.slice(), shuffle: st.shuffle });
+        }
+        if (performance.now() - t0 > 7000) {
+          return resolve({ id: last, playing: st.playing, queue: st.queue.slice(), shuffle: st.shuffle });
+        }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }), last);
+    assert.equal(out.shuffle, true, "shuffle is on");
+    assert.notEqual(out.id, last, "a different song came on, not the same one again");
+    assert.equal(out.playing, true, "and it is playing");
+    assert.equal(out.queue.length, 4, "the new order keeps the whole queue");
+    assert.ok(out.queue.includes(last), "the song that just finished is still in the loop");
+    assert.equal(out.queue[0], out.id, "the new order starts with the song that is now playing");
+    await page.evaluate(() => Lyra.player.setShuffle(false));
   });
 
   await check("dragging the timeline scrubs without moving or scrolling the sheet", async () => {

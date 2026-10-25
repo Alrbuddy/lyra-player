@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.22";
+  const APP_VERSION = "1.4.23";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -1638,7 +1638,13 @@
     $("#np-shuffle").innerHTML = SHUFFLE_SVG;
     $("#np-shuffle").classList.toggle("active", st.shuffle);
     $("#np-repeat").innerHTML = st.repeat === "one" ? REPEAT_ONE_SVG : REPEAT_SVG;
-    $("#np-repeat").classList.toggle("active", st.repeat !== "off");
+    // The queue always loops, so the button is always live; the icon says which
+    // kind of loop it is.
+    $("#np-repeat").classList.toggle("active", true);
+    $("#np-repeat").setAttribute(
+      "aria-label",
+      st.repeat === "one" ? "Looping this song, tap to loop the queue" : "Looping the queue, tap to loop this song"
+    );
     updateNpLyricsPreview();
     tintMini();
     tintNp();

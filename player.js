@@ -26,7 +26,10 @@
   // A list keeps playing when it reaches the end: loop the queue by default,
   // so finishing the last song never leaves the app sitting on a dead player.
   // The repeat button still offers off (stop at the end) and one (this song).
-  let repeat = "all";      // "off" | "all" | "one"
+  // The queue never dead-ends, so repeat has just two jobs: loop the list
+  // ("all") or loop this song ("one"). "off" used to mean "stop at the end",
+  // which left the app sitting paused on a finished song.
+  let repeat = "all";      // "all" | "one"
   let playCounted = false; // play count incremented for current track
   let playedSeconds = 0;
   let lastTick = 0;
@@ -393,11 +396,11 @@
     countPlay();
     try {
       await player.next(false);
-      // At the end of the queue with repeat off nothing advanced — stop here.
-      const end = endOf(current);
-      if (currentId() === id && end > 0 && audio.currentTime >= end - 0.06) {
-        audio.pause();
-        try { audio.currentTime = end; } catch (e) {}
+      // If the advance could not happen for any reason, start this song over
+      // instead of parking on a finished one with the player silent.
+      if (currentId() === id && (audio.ended || audio.paused)) {
+        try { audio.currentTime = startOf(current); } catch (e) { /* ignore */ }
+        await resume();
       }
     } finally {
       endingSegment = false;
@@ -545,12 +548,15 @@
       }
       let i = index + 1;
       if (i >= queue.length) {
-        if (repeat === "all" || manual) {
-          // Nothing to move on to in a one-song queue: let it end rather than
-          // restart the same song forever.
-          if (queue.length < 2 && !manual) return;
-          i = 0;
-        } else return;
+        // End of the queue: carry on. With shuffle on, deal a fresh order so
+        // the next song is a random one rather than the track that started the
+        // list; otherwise wrap to the top.
+        if (shuffle && baseQueue.length > 1) {
+          const justPlayed = currentId();
+          queue = shuffledIds(baseQueue);
+          if (queue.length > 1 && queue[0] === justPlayed) queue.push(queue.shift());
+        }
+        i = 0;
       }
       await player.playAt(i);
     },
@@ -563,7 +569,7 @@
         return;
       }
       let i = index - 1;
-      if (i < 0) i = repeat === "all" ? queue.length - 1 : 0;
+      if (i < 0) i = queue.length - 1;
       await player.playAt(i);
     },
 
@@ -593,7 +599,7 @@
     },
 
     cycleRepeat() {
-      repeat = repeat === "off" ? "all" : repeat === "all" ? "one" : "off";
+      repeat = repeat === "all" ? "one" : "all";
       emit("state", state());
       return repeat;
     },
