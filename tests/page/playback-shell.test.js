@@ -1831,6 +1831,155 @@ async function dragTouch(page, fromY, toY) {
     assert.ok(out.stages.includes("uploading"), "progress stages still reported");
   });
 
+  console.log("\nMotion");
+  await check("a press ripples from the finger and still plays the row", async () => {
+    await seed(page, null);
+    await page.waitForTimeout(350);
+    const box = await page.locator("#lib-body .song-row").first().boundingBox();
+    await page.mouse.move(box.x + 40, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(70);
+    const mid = await page.evaluate(() => {
+      const r = document.querySelector("#lib-body .song-row");
+      return {
+        rippling: r.classList.contains("rippling"),
+        rx: r.style.getPropertyValue("--rx"),
+        ry: r.style.getPropertyValue("--ry"),
+      };
+    });
+    assert.equal(mid.rippling, true, "the press starts a ripple");
+    assert.match(mid.rx, /^[\d.]+%$/, "it starts at the finger, horizontally (" + mid.rx + ")");
+    assert.match(mid.ry, /^[\d.]+%$/, "and vertically (" + mid.ry + ")");
+    await page.mouse.up();
+    await page.waitForTimeout(750);
+    const after = await page.evaluate(() => {
+      const r = document.querySelector("#lib-body .song-row");
+      return {
+        rippling: r.classList.contains("rippling"),
+        playing: Lyra.player.state().playing,
+        current: Lyra.player.state().track && Lyra.player.state().track.id,
+      };
+    });
+    assert.equal(after.rippling, false, "the ripple clears itself");
+    assert.equal(after.playing, true, "and the tap still played the song");
+    assert.ok(after.current, "a track is loaded");
+  });
+
+  await check("a fresh screen fades in and its rows arrive one after another", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      for (let i = 0; i < 8; i++) {
+        await Lyra.db.addTrack({
+          title: "Motion " + i, artist: "Motion Artist", album: "", duration: 100,
+          audio: base.audio, addedAt: Date.now() + i + 1, plays: 0, liked: false, lyrics: "",
+        });
+      }
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(50);
+    const early = await page.evaluate(() => {
+      const host = document.querySelector('.screen-host[data-screen="library"]');
+      const rows = [...host.querySelectorAll("#lib-body .song-row")];
+      return {
+        host: host.getAnimations().map((a) => a.animationName),
+        row: rows[0].getAnimations().map((a) => a.animationName),
+        delays: rows.slice(0, 3).map((r) => {
+          const a = r.getAnimations()[0];
+          return a ? Math.round(a.effect.getTiming().delay) : null;
+        }),
+        count: rows.length,
+      };
+    });
+    assert.ok(early.host.includes("screen-fade"), "the screen crossfades in (" + early.host + ")");
+    assert.deepEqual(early.row, ["row-rise"], "its rows rise");
+    assert.ok(early.count >= 8, "enough rows to see it");
+    assert.deepEqual(early.delays, [0, 18, 36], "each row waits a beat longer than the one above");
+    await page.waitForTimeout(700);
+    const settled = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll("#lib-body .song-row")];
+      return {
+        anims: rows.reduce((n, r) => n + r.getAnimations().length, 0),
+        opacity: getComputedStyle(rows[0]).opacity,
+        transform: getComputedStyle(rows[0]).transform,
+      };
+    });
+    assert.equal(settled.anims, 0, "nothing keeps animating");
+    assert.equal(settled.opacity, "1", "rows end fully opaque");
+    assert.equal(settled.transform, "none", "and back in place");
+  });
+
+  await check("holding a song row opens its menu without playing it", async () => {
+    await seed(page, null);
+    await page.waitForTimeout(350);
+    const before = await page.evaluate(() => (Lyra.player.state().track ? Lyra.player.state().track.id : null));
+    const box = await page.locator("#lib-body .song-row").first().boundingBox();
+    await page.mouse.move(box.x + 100, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(760);
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    const st = await page.evaluate(() => ({
+      sheetOpen: !document.getElementById("sheet").classList.contains("hidden"),
+      text: document.getElementById("sheet").innerText.replace(/\s+/g, " ").slice(0, 90),
+      now: Lyra.player.state().track ? Lyra.player.state().track.id : null,
+    }));
+    assert.equal(st.sheetOpen, true, "the row menu opens: " + st.text);
+    assert.equal(st.now, before, "and the hold did not start playback");
+    await page.evaluate(() => {
+      document.getElementById("sheet").classList.add("hidden");
+      document.getElementById("backdrop").classList.add("hidden");
+    });
+  });
+
+  await check("the tab icon pops on landing and a like beats once", async () => {
+    await seed(page, null);
+    await page.click('.nav-btn[data-tab="search"]');
+    await page.waitForTimeout(60);
+    const pop = await page.evaluate(() => {
+      const svg = document.querySelector('.nav-btn[data-tab="search"].on svg');
+      return svg ? svg.getAnimations().map((a) => a.animationName) : [];
+    });
+    assert.ok(pop.includes("tab-pop"), "the icon pops when you land on a tab (" + pop + ")");
+
+    await page.evaluate(() => Lyra.player.playQueue([Lyra.app.tracks[0].id], 0));
+    await page.waitForTimeout(250);
+    await page.click("#mini-like");
+    await page.waitForTimeout(60);
+    const heart = await page.evaluate(() => ({
+      liked: document.getElementById("mini-like").classList.contains("liked"),
+      anims: [...document.querySelectorAll("#mini-like svg")].flatMap((s) => s.getAnimations().map((a) => a.animationName)),
+    }));
+    assert.equal(heart.liked, true, "the song is liked");
+    assert.ok(heart.anims.includes("heart-pop"), "the heart beats once (" + heart.anims + ")");
+  });
+
+  await check("reduced motion switches every new animation off", async () => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      await Lyra.db.addTrack({
+        title: "Calm", artist: "Motion Artist", album: "", duration: 100,
+        audio: base.audio, addedAt: Date.now() + 1, plays: 0, liked: false, lyrics: "",
+      });
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(60);
+    const out = await page.evaluate(() => {
+      const host = document.querySelector('.screen-host[data-screen="library"]');
+      const row = host.querySelector("#lib-body .song-row");
+      const durs = (el) => el.getAnimations().map((a) => a.effect.getTiming().duration);
+      return { host: durs(host), row: durs(row), transition: getComputedStyle(row).transitionProperty };
+    });
+    assert.ok(out.row.every((d) => d <= 1), "rows do not ease: " + out.row);
+    assert.ok(out.host.every((d) => d <= 1), "screens do not fade: " + out.host);
+    assert.equal(out.transition, "none", "and transitions are off too");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+  });
+
   await check("no page errors during the run", async () => {
     assert.deepEqual(pageErrors, [], pageErrors.join(" | "));
   });

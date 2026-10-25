@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.18";
+  const APP_VERSION = "1.4.19";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -312,13 +312,33 @@
 
   // Enter a view. A clean cached screen is shown as-is; anything stale, new or
   // route-dependent (a detail page) is rebuilt.
+  // Restart a one-shot CSS animation. Removing the class, forcing a style
+  // flush and adding it again is what makes it replay on a reused element.
+  // Restart a one-shot animation on an element (same flush trick as above).
+  function pulseClass(el, cls) {
+    if (!el) return;
+    el.classList.remove(cls);
+    void el.offsetWidth;
+    el.classList.add(cls);
+  }
+
+  function playScreenIn(host, rows) {
+    if (!host) return;
+    host.classList.remove("screen-in", "rows-in");
+    void host.offsetWidth;
+    host.classList.add("screen-in");
+    if (rows) host.classList.add("rows-in");
+    clearTimeout(host._inTimer);
+    host._inTimer = setTimeout(() => host.classList.remove("screen-in", "rows-in"), 700);
+  }
+
   function showView() {
     const key = screenKey(route.view);
     const shell = $("#view");
     const host = hosts.get(key);
     // Settings reads live device numbers every time it opens.
     if (!host || dirtyViews.has(key) || key === "detail" || key === "settings") {
-      render();
+      render({ rows: true });
       return;
     }
     if (activeKey) scrollByView[activeKey] = shell.scrollTop;
@@ -326,6 +346,8 @@
     activeKey = key;
     applyChrome();
     shell.scrollTop = scrollByView[key] || 0;
+    // A cached screen fades in but its rows are not rebuilt, so they stay put.
+    playScreenIn(host, false);
   }
 
   // Re-render the active view in place. Keeps the scroll offset unless asked
@@ -348,6 +370,9 @@
     applyChrome();
     shell.scrollTop = restore;
     if (kept != null) scrollByView[key] = restore;
+    // Local updates (a checkbox, a saved edit) and player-driven redraws must
+    // not replay the entrance: only an actual screen entry animates.
+    if (!opts.keep && !opts.quiet) playScreenIn(host, opts.rows === true);
   }
 
   // ---------- Shared row ----------
@@ -532,7 +557,7 @@
       libSort = b.dataset.sort;
       closeSheet();
       try { await db.setSetting("libSort", libSort); } catch (e) { /* private mode */ }
-      render({ top: true });
+      render({ top: true, rows: true });
       $("#view").scrollTo({ top: 0 });
     }));
   }
@@ -1521,6 +1546,8 @@
 
   // Last track id the library list was drawn for (see updatePlayerUI).
   let lastUiTrackId = null;
+  // Last track the mini player / cover swap animation was played for.
+  let lastSwapTrackId = null;
 
   async function tintMini() {
     const t = currentTrack();
@@ -1559,6 +1586,13 @@
     $("#np-cover").innerHTML = artHTML(t);
     $("#np-title").textContent = t.title;
     $("#np-artist").textContent = t.artist;
+    // A different song swaps its text and cover in; play/pause never replays it.
+    if (lastSwapTrackId !== null && lastSwapTrackId !== t.id) {
+      pulseClass(mini, "swap-in");
+      pulseClass($("#np-cover"), "cover-in");
+      pulseClass($(".np-text"), "swap-in");
+    }
+    lastSwapTrackId = t.id;
     if (!$("#np-like").innerHTML) $("#np-like").innerHTML = HEART_SVG;
     setHeartState($("#np-like"), t);
     $("#np-play").innerHTML = st.playing ? PAUSE_SVG : PLAY_SVG;
@@ -1585,14 +1619,14 @@
       // player, or an album page keeps pointing at the song you left behind.
       if (lastUiTrackId !== t.id) {
         lastUiTrackId = t.id;
-        render();
+        render({ quiet: true });
       }
     }
     // Re-render the song list only when the song itself changed — play/pause
     // used to rebuild every row, which made the whole app feel sticky.
     if (route.view === "library" && libFilter === "songs" && lastUiTrackId !== t.id) {
       lastUiTrackId = t.id;
-      render();
+      render({ quiet: true });
     }
   }
 
@@ -2130,7 +2164,16 @@
     }));
 
     v.querySelectorAll("[data-play-track]").forEach((row) => {
+      // Hold a song row to open its menu (details, queue, playlist, delete).
+      // A tap still plays, and holdSuppress swallows the click a hold leaves.
+      if (row.querySelector("[data-dots]")) {
+        bindHold(row, () => {
+          const dots = row.querySelector("[data-dots]");
+          if (dots) dots.click();
+        });
+      }
       row.onclick = (e) => {
+        if (Date.now() < holdSuppress) return;
         if (e.target.closest("[data-dots]")) return;
         const id = Number(row.dataset.playTrack);
         if (selecting) {
@@ -2204,13 +2247,13 @@
         libFilter = c.dataset.libfilter;
         selecting = false; selected.clear();
         plSelecting = false; plSelected.clear();
-        render({ top: true });
+        render({ top: true, rows: true });
       }));
       const sel = $("#lib-select");
       if (sel) sel.onclick = () => {
         if (libFilter === "playlists") { plSelecting = !plSelecting; plSelected.clear(); }
         else { selecting = !selecting; selected.clear(); }
-        render({ top: true });
+        render({ top: true, rows: false });
       };
       // Tapping a playlist while selecting chooses it instead of opening it.
       v.querySelectorAll("[data-pl-tile]").forEach((b) => (b.onclick = () => {
@@ -2351,7 +2394,27 @@
   }
 
   // ---------- Global wiring ----------
+  // One delegated listener gives every tappable row and button a ripple that
+  // starts where the finger landed. Rebuilt screens pick it up for free.
+  const RIPPLE_SEL = ".song-row, .tile, .card, .browse-tile, .btn, .sheet-item, .big-card, .chip";
+  function wireRipples() {
+    document.addEventListener("pointerdown", (e) => {
+      const el = e.target.closest ? e.target.closest(RIPPLE_SEL) : null;
+      if (!el || el.disabled) return;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      el.style.setProperty("--rx", ((e.clientX - r.left) / r.width) * 100 + "%");
+      el.style.setProperty("--ry", ((e.clientY - r.top) / r.height) * 100 + "%");
+      el.classList.remove("rippling");
+      void el.offsetWidth;
+      el.classList.add("rippling");
+      clearTimeout(el._ripTimer);
+      el._ripTimer = setTimeout(() => el.classList.remove("rippling"), 520);
+    }, { passive: true });
+  }
+
   function wireChrome() {
+    wireRipples();
     document.querySelectorAll(".nav-btn").forEach((b) => {
       b.onclick = () => {
         const view = b.dataset.tab;
@@ -2632,7 +2695,7 @@
     window.Lyra.lyricsSync?.init();
     watchViewport();
     wireChrome();
-    render();
+    render({ rows: true });
     // Restore a sleep timer that was still running when the app was closed.
     try {
       const saved = Number(await db.getSetting(SLEEP_KEY)) || 0;

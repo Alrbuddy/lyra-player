@@ -719,6 +719,121 @@ input[type="range"]::-webkit-slider-thumb {
   text-decoration-thickness: 2px; text-underline-offset: 4px;
 }
 
+/* ================= Motion & micro-interactions =================
+   Small, cheap animations only: no layout work, nothing that runs while a
+   finger is dragging. Every one of them is switched off by the
+   prefers-reduced-motion block below. */
+@keyframes screen-fade { from { opacity: 0; } }
+@keyframes row-rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes swap-in { from { opacity: 0; transform: translateY(5px); } }
+@keyframes cover-in { from { opacity: 0; transform: scale(0.96); } }
+@keyframes heart-pop { 0% { transform: scale(1); } 38% { transform: scale(1.3); } 70% { transform: scale(0.94); } 100% { transform: scale(1); } }
+@keyframes tab-pop { 0% { transform: scale(0.82); } 55% { transform: scale(1.1); } 100% { transform: scale(1); } }
+@keyframes check-pop { from { transform: scale(0.6); opacity: 0.4; } }
+
+/* A tab switch crossfades its screen instead of snapping. */
+.screen-host.screen-in { animation: screen-fade 0.22s var(--ease); }
+
+/* When a list is built (or a tab is entered) its first rows rise in one after
+   another. Later rows share one delay so a 500-song library still settles in
+   well under half a second. */
+.screen-host.rows-in #lib-body > *,
+.screen-host.rows-in #detail-rows > *,
+.screen-host.rows-in .browse > *,
+.screen-host.rows-in .shelf-row > *,
+.screen-host.rows-in .chips > * { animation: row-rise 0.28s var(--ease) both; }
+.screen-host.rows-in #lib-body > :nth-child(2),
+.screen-host.rows-in #detail-rows > :nth-child(2) { animation-delay: 18ms; }
+.screen-host.rows-in #lib-body > :nth-child(3),
+.screen-host.rows-in #detail-rows > :nth-child(3) { animation-delay: 36ms; }
+.screen-host.rows-in #lib-body > :nth-child(4),
+.screen-host.rows-in #detail-rows > :nth-child(4) { animation-delay: 54ms; }
+.screen-host.rows-in #lib-body > :nth-child(5),
+.screen-host.rows-in #detail-rows > :nth-child(5) { animation-delay: 72ms; }
+.screen-host.rows-in #lib-body > :nth-child(6),
+.screen-host.rows-in #detail-rows > :nth-child(6) { animation-delay: 90ms; }
+.screen-host.rows-in #lib-body > :nth-child(n+7),
+.screen-host.rows-in #detail-rows > :nth-child(n+7) { animation-delay: 100ms; }
+
+/* New song: the mini player text, the cover and the Now Playing title swap
+   instead of blinking over. */
+.mini.swap-in .mini-art, .mini.swap-in .mini-info { animation: swap-in 0.28s var(--ease); }
+.np-cover.cover-in { animation: cover-in 0.34s var(--ease); }
+.np-text.swap-in { animation: swap-in 0.26s var(--ease); }
+
+/* A heart you just tapped beats once. */
+.icon-btn.liked svg { animation: heart-pop 0.36s var(--spring); }
+
+/* The tab you land on gets a single springy pop. */
+.nav-btn.on svg { animation: tab-pop 0.34s var(--spring); }
+
+/* A tick lands with weight. */
+.checkbox.on { animation: check-pop 0.2s var(--spring); }
+
+/* The row that is playing is tinted, so the list reads with the player. */
+.song-row:has(.song-title.playing) {
+  background: linear-gradient(90deg, rgba(30, 215, 96, 0.1), rgba(30, 215, 96, 0) 68%);
+}
+
+.backdrop { animation: fade-in 0.2s var(--ease); }
+
+/* ---- Ripple on press ----
+   The position comes from a single delegated pointerdown listener in app.js,
+   so rebuilt lists need no wiring. Only a translucent pseudo-element moves:
+   no layout, no paint of the content itself. */
+@keyframes ripple {
+  from { opacity: 0.5; transform: translate(-50%, -50%) scale(0.12); }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+}
+.song-row, .tile, .card, .browse-tile, .btn, .sheet-item, .big-card, .chip {
+  position: relative; overflow: hidden;
+}
+.song-row::after, .tile::after, .card::after, .browse-tile::after,
+.btn::after, .sheet-item::after, .big-card::after, .chip::after {
+  content: ""; position: absolute; left: var(--rx, 50%); top: var(--ry, 50%);
+  width: 240%; padding-bottom: 240%; border-radius: 50%;
+  transform: translate(-50%, -50%) scale(0.12);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0) 68%);
+  opacity: 0; pointer-events: none;
+}
+.rippling::after { animation: ripple 0.5s var(--ease); }
+
+/* Presses: quick squish in, springy return (the spring lives in :active). */
+.song-row { transition: background 0.15s, transform 0.12s var(--ease); }
+.song-row:active { transform: scale(0.985); }
+.tile, .card, .browse-tile, .btn, .sheet-item, .big-card {
+  transition: transform 0.2s var(--spring), background 0.16s, filter 0.16s, box-shadow 0.2s;
+}
+
+/* Keyboard users get a visible ring; mouse users never see it. */
+.song-row:focus-visible, .tile:focus-visible, .card:focus-visible, .btn:focus-visible,
+.sheet-item:focus-visible, .chip:focus-visible, .icon-btn:focus-visible, .nav-btn:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+/* Pointer devices get hover feedback; touch screens never do. */
+@media (hover: hover) and (pointer: fine) {
+  .song-row:hover, .tile:hover, .card:hover { background: var(--surface2); }
+  .sheet-item:hover { background: var(--surface3); }
+  .icon-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+  .nav-btn:not(.on):hover { color: #cfcfcf; }
+  .chip:hover { background: #3a3a3a; }
+  .btn:hover { filter: brightness(1.12); }
+
+  /* Artwork leans in under the pointer; the row itself barely moves. */
+  .card .art, .card .art-ph, .tile .art, .tile .art-ph { transition: transform 0.35s var(--ease); }
+  .card:hover { transform: translateY(-2px); }
+  .card:hover .art, .card:hover .art-ph { transform: scale(1.05); }
+  .tile:hover { transform: translateY(-1px); }
+  .tile:hover .art, .tile:hover .art-ph { transform: scale(1.03); }
+  .browse-tile:hover { transform: translateY(-2px); }
+  .mini:hover { transform: translateY(-1px); }
+  .np-play:hover { transform: scale(1.04); }
+  .np-lyrics-card:hover { background: rgba(255, 255, 255, 0.06); }
+  .song-row .row-dots { opacity: 0.6; transition: opacity 0.15s; }
+  .song-row:hover .row-dots { opacity: 1; }
+}
+
 /* ---- Motion preferences ----
    `transition-property: none` rather than a 1ms duration: a running transition
    outranks even an !important declaration, so a throttled page could hold the
