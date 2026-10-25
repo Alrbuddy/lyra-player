@@ -202,6 +202,116 @@ async function dragTouch(page, fromY, toY) {
     assert.equal(await page.evaluate(() => window.__vt), 0, "no view-transition snapshots");
   });
 
+  await check("tab switches reuse the screen they already built", async () => {
+    await seed(page, null);
+    await page.waitForTimeout(250);
+    const built = await page.evaluate(() => {
+      const host = document.querySelector('.screen-host[data-screen="library"]');
+      window.__libHost = host;
+      window.__libRow = host.querySelector(".song-row");
+      return !!host && !!window.__libRow;
+    });
+    assert.equal(built, true, "the library screen was built once");
+    for (const t of ["home", "search", "settings", "home"]) {
+      await page.click(`.nav-btn[data-tab="${t}"]`);
+      await page.waitForTimeout(140);
+    }
+    await page.click('.nav-btn[data-tab="library"]');
+    await page.waitForTimeout(160);
+    const after = await page.evaluate(() => {
+      const host = document.querySelector('.screen-host[data-screen="library"]');
+      return {
+        sameHost: host === window.__libHost,
+        sameRow: host.querySelector(".song-row") === window.__libRow,
+        visible: !host.hidden,
+        shown: [...document.querySelectorAll(".screen-host")].filter((h) => !h.hidden).map((h) => h.dataset.screen),
+        navOn: document.querySelector('.nav-btn[data-tab="library"]').classList.contains("on"),
+      };
+    });
+    assert.equal(after.sameHost, true, "the library host survives tab switches");
+    assert.equal(after.sameRow, true, "its rows were never rebuilt");
+    assert.equal(after.visible, true, "library is shown again");
+    assert.deepEqual(after.shown, ["library"], "exactly one screen is visible");
+    assert.equal(after.navOn, true, "the tab pill follows");
+  });
+
+  await check("each tab keeps its own scroll position", async () => {
+    await page.evaluate(async () => {
+      await Lyra.db.clearAll();
+      const tiny = new Blob([new Uint8Array(64)], { type: "audio/wav" });
+      for (let i = 0; i < 30; i++) {
+        await Lyra.db.addTrack({
+          title: "Scroll Row " + i, artist: "Scroll Artist", album: "", duration: 100,
+          audio: tiny, addedAt: Date.now() - i, plays: 0, liked: false, lyrics: "",
+        });
+      }
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(320);
+    const parked = await page.evaluate(() => {
+      const shell = document.getElementById("view");
+      shell.scrollTop = 260;
+      return shell.scrollTop;
+    });
+    assert.ok(parked > 200, "the library scrolled, got " + parked);
+    await page.click('.nav-btn[data-tab="home"]');
+    await page.waitForTimeout(220);
+    const homeTop = await page.evaluate(() => document.getElementById("view").scrollTop);
+    assert.ok(homeTop < 5, "Home opens at its own top, got " + homeTop);
+    await page.click('.nav-btn[data-tab="library"]');
+    await page.waitForTimeout(220);
+    const back = await page.evaluate(() => document.getElementById("view").scrollTop);
+    assert.ok(Math.abs(back - parked) < 8, "the library came back where it was, got " + back);
+  });
+
+  await check("a library change still shows up the next time the tab is opened", async () => {
+    const gone = await page.evaluate(async () => {
+      const t = Lyra.app.tracks[0];
+      await Lyra.db.deleteTrack(t.id);
+      await Lyra.app.refreshData();
+      return { id: t.id, title: t.title };
+    });
+    await page.click('.nav-btn[data-tab="home"]');
+    await page.waitForTimeout(180);
+    await page.click('.nav-btn[data-tab="library"]');
+    await page.waitForTimeout(220);
+    const state = await page.evaluate((info) => ({
+      row: !!document.querySelector(`[data-screen="library"] [data-play-track="${info.id}"]`),
+      rows: document.querySelectorAll('[data-screen="library"] .song-row').length,
+    }), gone);
+    assert.equal(state.row, false, "the deleted song is gone");
+    assert.ok(state.rows > 5, "the rest of the list rebuilt, got " + state.rows);
+  });
+
+  await check("a finished spin is counted without re-reading the library", async () => {
+    await seed(page, null);
+    await page.evaluate(() => Lyra.app.go("home"));
+    await page.waitForTimeout(250);
+    const spin = await page.evaluate(async () => {
+      let reads = 0;
+      const orig = Lyra.db.getAllTracks.bind(Lyra.db);
+      Lyra.db.getAllTracks = () => { reads++; return orig(); };
+      const id = Lyra.app.tracks[0].id;
+      await Lyra.player.playQueue([id], 0);
+      await new Promise((r) => setTimeout(r, 450));
+      Lyra.player.seek(5);
+      await new Promise((r) => setTimeout(r, 260));
+      Lyra.player.seek(40);
+      Lyra.player.audio.dispatchEvent(new Event("timeupdate"));
+      await new Promise((r) => setTimeout(r, 700));
+      const plays = Lyra.app.tracks[0].plays;
+      Lyra.db.getAllTracks = orig;
+      return { reads, plays };
+    });
+    assert.equal(spin.plays, 1, "the play was counted");
+    assert.equal(spin.reads, 0, "no full library read during playback, got " + spin.reads);
+    await page.click('.nav-btn[data-tab="library"]');
+    await page.waitForTimeout(300);
+    const text = await page.evaluate(() => document.getElementById("view").textContent);
+    assert.match(text, /1 plays/, "the new count is on the rebuilt list");
+  });
+
   await check("play/pause no longer rebuilds the library list", async () => {
     await seed(page, null);
     await page.evaluate(async () => {
@@ -220,11 +330,27 @@ async function dragTouch(page, fromY, toY) {
   });
 
   await check("tapping the tab you are on jumps back to the top", async () => {
-    await page.evaluate(() => { document.querySelector("#view").scrollTop = 420; });
-    await page.waitForTimeout(80);
-    await page.click('.nav-btn[data-tab="home"]');
-    await page.waitForTimeout(600);
-    const top = await page.evaluate(() => document.querySelector("#view").scrollTop);
+    await page.evaluate(async () => {
+      const tiny = new Blob([new Uint8Array(64)], { type: "audio/wav" });
+      for (let i = 0; i < 30; i++) {
+        await Lyra.db.addTrack({
+          title: "Tap Row " + i, artist: "Tap Artist", album: "", duration: 100,
+          audio: tiny, addedAt: Date.now() - i, plays: 0, liked: false, lyrics: "",
+        });
+      }
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+    });
+    await page.waitForTimeout(320);
+    const parked = await page.evaluate(() => {
+      const shell = document.getElementById("view");
+      shell.scrollTop = 400;
+      return shell.scrollTop;
+    });
+    assert.ok(parked > 200, "the library really scrolled, got " + parked);
+    await page.click('.nav-btn[data-tab="library"]');
+    await page.waitForTimeout(700);
+    const top = await page.evaluate(() => document.getElementById("view").scrollTop);
     assert.ok(top < 5, "scrolled back to the top, got " + top);
   });
 

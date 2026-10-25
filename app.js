@@ -102,6 +102,8 @@
   async function refreshData() {
     [tracks, playlists] = await Promise.all([db.getAllTracks(), db.getAllPlaylists()]);
     recomputeAlbumKeys();
+    // Screens built from the library are now stale; they rebuild when next shown.
+    for (const v of DATA_VIEWS) dirtyViews.add(v);
   }
 
   // Album keys that count as real albums (recomputed whenever the library changes,
@@ -195,16 +197,41 @@
   let route = { view: "home", params: {} };
   const historyStack = [];
 
-  function go(view, params, push) {
-    if (push !== false && route.view !== view) historyStack.push(route);
-    route = { view, params: params || {} };
-    render();
+  // ---------- Screens ----------
+  // Each tab keeps its own host element inside #view, so switching tabs is a
+  // visibility flip instead of a rebuild of thousands of nodes. A host is only
+  // rebuilt when its data changed or when it is entered fresh; its scroll
+  // offset is remembered so coming back lands where you left off.
+  const SCREEN_KEYS = ["home", "search", "library", "import", "settings", "detail"];
+  // Views whose content depends on library data: rebuilt after a data change.
+  const DATA_VIEWS = ["home", "search", "library"];
+  const hosts = new Map();
+  const dirtyViews = new Set();
+  const scrollByView = {};
+  let activeKey = null;
+
+  function screenKey(view) {
+    return view === "detail" ? "detail" : view;
   }
 
-  function back() {
-    const prev = historyStack.pop();
-    route = prev || { view: "home", params: {} };
-    render();
+  function ensureHost(key) {
+    const shell = $("#view");
+    let host = hosts.get(key);
+    if (host && host.isConnected && host.parentNode === shell) return host;
+    host = document.createElement("div");
+    host.className = "screen-host";
+    host.dataset.screen = key;
+    host.hidden = true;
+    shell.appendChild(host);
+    hosts.set(key, host);
+    return host;
+  }
+
+  function showOnly(key) {
+    for (const k of SCREEN_KEYS) {
+      const host = hosts.get(k);
+      if (host) host.hidden = k !== key;
+    }
   }
 
   // Liquid-glass tab highlight: slide the pill to the active tab.
@@ -217,25 +244,67 @@
     if (i >= 0) pill.style.transform = `translateX(${i * 100}%)`;
   }
 
-  function applyRender() {
-    const v = $("#view");
-    if (route.view === "home") v.innerHTML = viewHome();
-    else if (route.view === "search") v.innerHTML = viewSearch();
-    else if (route.view === "library") v.innerHTML = viewLibrary();
-    else if (route.view === "import") v.innerHTML = viewImport();
-    else if (route.view === "settings") v.innerHTML = viewSettings();
-    else if (route.view === "detail") v.innerHTML = viewDetail(route.params);
-    bindView(route.view);
+  function applyChrome() {
     document.querySelectorAll(".nav-btn").forEach((b) =>
       b.classList.toggle("on", b.dataset.tab === route.view));
     positionTabPill();
-    v.scrollTop = 0;
   }
 
-  // Always synchronous — callers often query the DOM right after rendering.
-  // View Transitions wrap nav tab switches only (see wireChrome).
-  function render() {
-    applyRender();
+  function viewHTML(view) {
+    if (view === "home") return viewHome();
+    if (view === "search") return viewSearch();
+    if (view === "library") return viewLibrary();
+    if (view === "import") return viewImport();
+    if (view === "settings") return viewSettings();
+    return viewDetail(route.params);
+  }
+
+  function go(view, params, push) {
+    if (push !== false && route.view !== view) historyStack.push(route);
+    route = { view, params: params || {} };
+    showView();
+  }
+
+  function back() {
+    const prev = historyStack.pop();
+    route = prev || { view: "home", params: {} };
+    showView();
+  }
+
+  // Enter a view. A clean cached screen is shown as-is; anything stale, new or
+  // route-dependent (a detail page) is rebuilt.
+  function showView() {
+    const key = screenKey(route.view);
+    const shell = $("#view");
+    const host = hosts.get(key);
+    // Settings reads live device numbers every time it opens.
+    if (!host || dirtyViews.has(key) || key === "detail" || key === "settings") {
+      render();
+      return;
+    }
+    if (activeKey) scrollByView[activeKey] = shell.scrollTop;
+    showOnly(key);
+    activeKey = key;
+    applyChrome();
+    shell.scrollTop = scrollByView[key] || 0;
+  }
+
+  // Re-render the active view in place. Keeps the scroll offset unless asked
+  // for the top, so a data refresh never throws the reader back to the start.
+  function render(opts) {
+    opts = opts || {};
+    const shell = $("#view");
+    const key = screenKey(route.view);
+    const host = ensureHost(key);
+    if (activeKey) scrollByView[activeKey] = shell.scrollTop;
+    const restore = opts.top ? 0 : key === "detail" ? 0 : scrollByView[key] || 0;
+    host.innerHTML = viewHTML(route.view);
+    bindView(route.view, host);
+    showOnly(key);
+    activeKey = key;
+    dirtyViews.delete(key);
+    applyChrome();
+    shell.scrollTop = restore;
   }
 
   // ---------- Shared row ----------
@@ -417,7 +486,7 @@
       libSort = b.dataset.sort;
       closeSheet();
       try { await db.setSetting("libSort", libSort); } catch (e) { /* private mode */ }
-      render();
+      render({ top: true });
       $("#view").scrollTo({ top: 0 });
     }));
   }
@@ -1880,8 +1949,8 @@
   }
 
   // ---------- View binding ----------
-  function bindView(view) {
-    const v = $("#view");
+  function bindView(view, root) {
+    const v = root || hosts.get(screenKey(view)) || $("#view");
 
     v.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => go(b.dataset.go, {}, b.dataset.go !== "settings")));
     v.querySelectorAll("[data-back]").forEach((b) => (b.onclick = back));
@@ -1960,16 +2029,16 @@
             `<button class="sheet-item" data-detail-kind="playlist" data-detail-val="${p.id}">${NOTE_SVG}${esc(p.name)} • Playlist</button>`).join("");
           body.innerHTML = (rows + pls) || `<div class="empty"><div class="big">No results</div><div class="small">Try a different search.</div></div>`;
         }
-        bindView("search-results");
+        bindView("search", v);
       };
     }
 
     if (view === "library") {
       v.querySelectorAll("[data-libfilter]").forEach((c) => (c.onclick = () => {
-        libFilter = c.dataset.libfilter; selecting = false; selected.clear(); render();
+        libFilter = c.dataset.libfilter; selecting = false; selected.clear(); render({ top: true });
       }));
       const sel = $("#lib-select");
-      if (sel) sel.onclick = () => { selecting = !selecting; selected.clear(); render(); };
+      if (sel) sel.onclick = () => { selecting = !selecting; selected.clear(); render({ top: true }); };
       const sortBtn = $("#lib-sort");
       if (sortBtn) sortBtn.onclick = openSortSheet;
       const az = $("#az-strip");
@@ -1983,7 +2052,7 @@
         if (row) row.scrollIntoView({ block: "start", behavior: "smooth" });
       }));
       const tg = $("#lib-toggle");
-      if (tg) tg.onclick = () => { libGrid = !libGrid; render(); };
+      if (tg) tg.onclick = () => { libGrid = !libGrid; render({ top: true }); };
       const plus = $("#lib-plus");
       if (plus) plus.onclick = () => {
         openSheet(`<div class="sheet-title">Add</div>
@@ -1995,7 +2064,7 @@
           closeSheet();
           if (x === "pl") {
             const name = await promptSheet("New playlist", "Playlist name");
-            if (name) { await createPlaylist(name); toast("Playlist created"); if (libFilter !== "playlists") { libFilter = "playlists"; } render(); }
+            if (name) { await createPlaylist(name); toast("Playlist created"); if (libFilter !== "playlists") { libFilter = "playlists"; } render({ top: true }); }
           } else if (x === "imp") $("#file-input").click();
           else if (x === "res") $("#restore-input").click();
         }));
@@ -2102,7 +2171,7 @@
         route = { view, params: {} };
         // View Transitions snapshotted the whole screen (including two
         // backdrop-blurred bars) and made tab switches feel stuck on iOS.
-        applyRender();
+        showView();
       };
     });
 
@@ -2238,7 +2307,19 @@
   });
   player.on("state", updatePlayerUI);
   player.on("time", () => { updateProgress(); updateNpLyricsPreview(); highlightLrc(); });
-  player.on("playcount", () => { refreshData(); });
+  // A finished spin only changes two numbers. Patch them in memory and rebuild
+  // Home/Library the next time they are shown instead of re-reading every track
+  // (and every song's audio) mid-playback, which is what made the app stutter.
+  player.on("playcount", (t) => {
+    if (!t) return;
+    const local = tracks.find((x) => x.id === t.id);
+    if (local) {
+      local.plays = t.plays;
+      local.lastPlayedAt = t.lastPlayedAt;
+    }
+    dirtyViews.add("home");
+    dirtyViews.add("library");
+  });
   player.on("queue", updatePlayerUI);
   player.on("needqueue", () => toast("Pick a song first"));
 
