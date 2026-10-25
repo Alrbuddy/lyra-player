@@ -23,7 +23,10 @@
   let current = null;      // current track record
   let currentUrl = null;
   let shuffle = false;
-  let repeat = "off";      // "off" | "all" | "one"
+  // A list keeps playing when it reaches the end: loop the queue by default,
+  // so finishing the last song never leaves the app sitting on a dead player.
+  // The repeat button still offers off (stop at the end) and one (this song).
+  let repeat = "all";      // "off" | "all" | "one"
   let playCounted = false; // play count incremented for current track
   let playedSeconds = 0;
   let lastTick = 0;
@@ -521,8 +524,12 @@
       }
       let i = index + 1;
       if (i >= queue.length) {
-        if (repeat === "all" || manual) i = 0;
-        else return;
+        if (repeat === "all" || manual) {
+          // Nothing to move on to in a one-song queue: let it end rather than
+          // restart the same song forever.
+          if (queue.length < 2 && !manual) return;
+          i = 0;
+        } else return;
       }
       await player.playAt(i);
     },
