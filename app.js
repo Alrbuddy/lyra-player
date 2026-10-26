@@ -3,7 +3,7 @@
   "use strict";
   window.Lyra = window.Lyra || {};
 
-  const APP_VERSION = "1.4.25";
+  const APP_VERSION = "1.4.26";
   const db = window.Lyra.db;
   const player = window.Lyra.player;
 
@@ -2344,9 +2344,12 @@
       }));
       const sel = $("#lib-select");
       if (sel) sel.onclick = () => {
+        // Stay exactly where you are. The whole point of Select is to tick the
+        // rows already on screen, so entering or leaving it must not throw the
+        // reader back to the top of a long list.
         if (libFilter === "playlists") { plSelecting = !plSelecting; plSelected.clear(); }
         else { selecting = !selecting; selected.clear(); }
-        render({ top: true, rows: false });
+        render({ keep: true, rows: false });
       };
       // Tapping a playlist while selecting chooses it instead of opening it.
       v.querySelectorAll("[data-pl-tile]").forEach((b) => (b.onclick = () => {

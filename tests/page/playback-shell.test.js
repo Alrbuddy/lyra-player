@@ -1262,6 +1262,62 @@ async function dragTouch(page, fromY, toY) {
     await page.waitForTimeout(200);
   });
 
+  await check("Select keeps your place in a long list instead of jumping to the top", async () => {
+    await seed(page, null);
+    await page.evaluate(async () => {
+      const base = Lyra.app.tracks[0];
+      for (let i = 0; i < 24; i++) {
+        await Lyra.db.addTrack({
+          title: "Scroll Song " + i, artist: "Probe Artist", album: "", duration: 100,
+          audio: base.audio, addedAt: Date.now() + i, plays: 0, liked: false, lyrics: "",
+        });
+      }
+      await Lyra.app.refreshData();
+      Lyra.app.go("library");
+      await new Promise((r) => setTimeout(r, 150));
+      document.getElementById("view").scrollTop = 700;
+      await new Promise((r) => setTimeout(r, 120));
+    });
+    await page.waitForTimeout(250);
+    const before = await page.evaluate(() => document.getElementById("view").scrollTop);
+    assert.ok(before > 500, "the list really is scrolled down before pressing Select: " + before);
+
+    await page.click("#lib-select");
+    await page.waitForTimeout(250);
+    const on = await page.evaluate(() => {
+      const view = document.getElementById("view");
+      const row = [...document.querySelectorAll("#lib-body .song-row")].find((r) => {
+        const b = r.getBoundingClientRect();
+        return b.top > 150 && b.bottom < 520;
+      });
+      row.click();
+      return {
+        top: view.scrollTop,
+        label: document.getElementById("lib-select").textContent,
+        checkboxes: document.querySelectorAll("#lib-body .checkbox").length,
+        count: (document.getElementById("bulk-count") || {}).textContent,
+        ticked: row.querySelector(".checkbox").classList.contains("on"),
+        title: row.querySelector(".song-title").textContent,
+      };
+    });
+    assert.equal(on.top, before, "entering select mode leaves the scroll position alone");
+    assert.equal(on.label, "Done", "the button flips to Done where you are");
+    assert.ok(on.checkboxes > 5, "every row on screen offers a checkbox");
+    assert.equal(on.ticked, true, "a row down the list can be ticked in place: " + on.title);
+    assert.equal(on.count, "1 selected");
+
+    await page.evaluate(() => document.getElementById("lib-select").click());
+    await page.waitForTimeout(250);
+    const off = await page.evaluate(() => ({
+      top: document.getElementById("view").scrollTop,
+      label: document.getElementById("lib-select").textContent,
+      bar: !!document.querySelector(".bulk-bar"),
+    }));
+    assert.equal(off.top, before, "leaving select mode keeps the place too");
+    assert.equal(off.label, "Select");
+    assert.equal(off.bar, false, "the bar goes away");
+  });
+
   await check("the selection's Edit button sets the artist and album for many songs", async () => {
     await seed(page, null);
     await page.evaluate(async () => {
