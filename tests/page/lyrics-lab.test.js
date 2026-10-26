@@ -725,6 +725,125 @@ async function closeOverlays(page) {
     await page.evaluate(() => Lyra.player.audio.pause());
   });
 
+  await check("Delete removes the held line outright, with no empty gap left", async () => {
+    await page.evaluate(() => Lyra.player.audio.play().catch(() => {}));
+    await pause(page, 300);
+    await page.locator('.llab-line[data-i="2"]').scrollIntoViewIfNeeded();
+    await pause(page, 200);
+    const box = await page.locator('.llab-line[data-i="2"]').boundingBox();
+    await page.mouse.move(box.x + 24, box.y + box.height / 2);
+    await page.mouse.down();
+    await pause(page, 680);
+    await page.mouse.up();
+    const btn = await page.evaluate(() => {
+      const el = document.querySelector('.llab-edit [data-edit="delete"]');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { text: el.textContent.trim(), w: Math.round(r.width), h: Math.round(r.height), hit: document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest("[data-edit]")?.dataset.edit };
+    });
+    assert.ok(btn, "the inline editor offers a Delete button");
+    assert.match(btn.text, /Delete/);
+    assert.ok(btn.w > 60 && btn.h >= 32, "Delete is a real tap target (" + btn.w + "x" + btn.h + ")");
+    assert.equal(btn.hit, "delete", "nothing covers the Delete button");
+
+    await page.click('.llab-edit [data-edit="delete"]');
+    await pause(page, 550);
+    const after = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.app.tracks[0].id);
+      return {
+        count: t.lyricsSynced.lines.length,
+        gone: t.lyricsSynced.lines.some((l) => l.text === "Seven eight nine"),
+        nextText: t.lyricsSynced.lines[2].text,
+        nextStart: t.lyricsSynced.lines[2].t,
+        prevEnd: t.lyricsSynced.lines[1].end,
+        domCount: document.querySelectorAll(".llab-line").length,
+        domNext: document.querySelector('.llab-line[data-i="2"]').textContent.trim(),
+        blank: t.lyrics.split("\n").filter((s) => !s.trim()).length,
+        lyricsLines: t.lyrics.split("\n").length,
+        editor: !!document.querySelector(".llab-edit-input"),
+        editing: Lyra.lyricsSync._state().editing,
+        paused: Lyra.player.audio.paused,
+      };
+    });
+    assert.equal(after.count, 11, "exactly one line was removed (" + after.count + " left)");
+    assert.equal(after.gone, false, "the held line is gone from storage");
+    assert.equal(after.domCount, 11, "and from the screen");
+    assert.equal(after.nextText, "Ten eleven twelve", "the next line takes its place");
+    assert.equal(after.domNext, "Ten eleven twelve");
+    assert.ok(Math.abs(after.nextStart - 4.4) < 0.01, "the next line keeps its own timing (" + after.nextStart + ")");
+    assert.equal(after.lyricsLines, 11, "the plain lyrics text lost one line, not gained a blank");
+    assert.equal(after.blank, 0, "no empty line left behind");
+    assert.equal(after.editor, false);
+    assert.equal(after.editing, -1);
+    assert.equal(after.paused, false, "playback resumes without leaving the lyrics screen");
+  });
+
+  await check("clearing a line and pressing Save deletes it instead of leaving a gap", async () => {
+    await page.evaluate(() => Lyra.player.audio.play().catch(() => {}));
+    await pause(page, 300);
+    await page.locator('.llab-line[data-i="3"]').scrollIntoViewIfNeeded();
+    await pause(page, 200);
+    const box = await page.locator('.llab-line[data-i="3"]').boundingBox();
+    await page.mouse.move(box.x + 24, box.y + box.height / 2);
+    await page.mouse.down();
+    await pause(page, 680);
+    await page.mouse.up();
+    await page.fill(".llab-edit-input", "   ");
+    await page.click('.llab-edit [data-edit="save"]');
+    await pause(page, 550);
+    const after = await page.evaluate(async () => {
+      const t = await Lyra.db.getTrack(Lyra.app.tracks[0].id);
+      return {
+        count: t.lyricsSynced.lines.length,
+        alpha: t.lyricsSynced.lines.some((l) => l.text === "Alpha beta gamma"),
+        blank: t.lyrics.split("\n").filter((s) => !s.trim()).length,
+        domCount: document.querySelectorAll(".llab-line").length,
+        editor: !!document.querySelector(".llab-edit-input"),
+      };
+    });
+    assert.equal(after.count, 10, "an emptied line is removed, not stored as a blank");
+    assert.equal(after.alpha, false);
+    assert.equal(after.blank, 0);
+    assert.equal(after.domCount, 10);
+    assert.equal(after.editor, false);
+    await page.evaluate(() => Lyra.player.audio.pause());
+  });
+
+  await check("deleting every line clears the timed view cleanly", async () => {
+    const out = await page.evaluate(async () => {
+      // Drive the same code path the Delete button uses, line by line.
+      const id = Lyra.app.tracks[0].id;
+      const t = await Lyra.db.getTrack(id);
+      const n = t.lyricsSynced.lines.length;
+      for (let k = 0; k < n; k++) {
+        if (Lyra.lyricsSync.isEditing()) Lyra.lyricsSync.cancelLineEdit();
+        await Lyra.lyricsSync.deleteLineEdit(0);
+      }
+      const after = await Lyra.db.getTrack(id);
+      return {
+        synced: after.lyricsSynced,
+        lyrics: after.lyrics,
+        lines: document.querySelectorAll(".llab-line").length,
+        bar: !!document.getElementById("llab-bar"),
+        cls: document.getElementById("lyrics-text").className,
+        text: document.getElementById("lyrics-text").textContent.trim(),
+      };
+    });
+    assert.equal(out.synced, null, "no empty timed list is left in storage");
+    assert.equal(out.lyrics, "");
+    assert.equal(out.lines, 0, "no stale timed rows on screen");
+    assert.equal(out.bar, false, "the timed toolbar goes away");
+    assert.ok(!/llab-active/.test(out.cls), "the view returns to plain text");
+    assert.match(out.text, /No lyrics yet/);
+
+    // Put the fixture back for the checks that follow.
+    await closeOverlays(page);
+    await seed(page, true);
+    await pause(page, 300);
+    await openLyrics(page);
+    await pause(page, 400);
+  });
+
   await check("offset nudge shifts which line is active and is saved", async () => {
     await seekTo(page, 1.5);
     assert.equal(await activeIndex(page), 0, "line 2 starts at 1.6s");

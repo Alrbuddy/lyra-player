@@ -1753,6 +1753,10 @@
         '<textarea class="llab-edit-input" rows="2" spellcheck="false" ' +
           'aria-label="Edit this lyric line">' + esc(viewLines[i].text) + '</textarea>' +
         '<div class="llab-edit-actions">' +
+          '<button type="button" class="llab-chip llab-del" data-edit="delete" aria-label="Delete this line">' +
+            '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2M6.5 7l.9 13h9.2l.9-13M10 11v5M14 11v5"/></svg>' +
+            '<span>Delete</span>' +
+          '</button>' +
           '<button type="button" class="llab-chip" data-edit="cancel">Discard</button>' +
           '<button type="button" class="llab-btn-save" data-edit="save">Save</button>' +
         '</div>' +
@@ -1765,6 +1769,7 @@
     }
     line.querySelector('[data-edit="cancel"]').onclick = (e) => { e.stopPropagation(); cancelLineEdit(); };
     line.querySelector('[data-edit="save"]').onclick = (e) => { e.stopPropagation(); saveLineEdit(i); };
+    line.querySelector('[data-edit="delete"]').onclick = (e) => { e.stopPropagation(); deleteLineEdit(i); };
     toast("Paused — fix the line, then Save");
     return true;
   }
@@ -1796,6 +1801,8 @@
     const text = ta ? ta.value.replace(/\s+/g, " ").trim() : "";
     const t = viewTrack && (findTrack(viewTrack.id) || viewTrack);
     if (!t || !t.lyricsSynced || !t.lyricsSynced.lines[i]) { finishEditUi(); resumeAfterEdit(); return; }
+    // Saving a line you emptied removes it, so you never leave a blank gap.
+    if (!text) { await deleteLineEdit(i); return; }
 
     const lines = t.lyricsSynced.lines.map((l) => Object.assign({}, l));
     const cur = lines[i];
@@ -1823,6 +1830,51 @@
     const box2 = doc() && doc().getElementById("lyrics-text");
     if (box2) renderLines(box2);
     activeLine = -1;
+    resumeAfterEdit();
+  }
+
+  // Remove a line outright (including its word timings) and rewrite the plain
+  // lyrics text from what is left, so deleting never leaves an empty row.
+  async function deleteLineEdit(i) {
+    const t = viewTrack && (findTrack(viewTrack.id) || viewTrack);
+    const src = t && t.lyricsSynced && Array.isArray(t.lyricsSynced.lines) ? t.lyricsSynced.lines : null;
+    if (!src || i < 0 || i >= src.length) { finishEditUi(); resumeAfterEdit(); return; }
+
+    const kept = src.filter((_, k) => k !== i).map((l) => Object.assign({}, l));
+    const lyrics = kept.map((l) => String(l.text == null ? "" : l.text)).join("\n");
+    // Last line gone: drop the timed data entirely so the view falls back to
+    // plain text rather than keeping an empty timed list around.
+    const synced = kept.length
+      ? Object.assign({}, t.lyricsSynced, { lines: kept, editedAt: Date.now() })
+      : null;
+
+    editing = -1;
+    try {
+      await savePatch(t, { lyrics, lyricsSynced: synced });
+      toast(kept.length ? "Line deleted" : "Lyrics cleared");
+    } catch (e) {
+      t.lyrics = lyrics;
+      t.lyricsSynced = synced;
+      toast(saveErrorText(e));
+    }
+    const live = npTrack();
+    if (live && live.id === t.id) { live.lyrics = lyrics; live.lyricsSynced = synced; }
+    viewTrack = t;
+    await refreshTracks();
+
+    if (!synced) {
+      teardownLyrics();
+      const box = doc() && doc().getElementById("lyrics-text");
+      if (box) {
+        box.className = "lyrics-text empty";
+        box.innerHTML = "No lyrics yet.<br>Tap the pencil to paste them in.";
+      }
+    } else {
+      viewLines = withOffset(synced.lines, viewOffset);
+      const box = doc() && doc().getElementById("lyrics-text");
+      if (box) renderLines(box);
+      activeLine = -1;
+    }
     resumeAfterEdit();
   }
 
@@ -2036,6 +2088,7 @@
     lrcTextFor,
     beginLineEdit,
     cancelLineEdit,
+    deleteLineEdit,
     isEditing() { return editing >= 0; },
     LrcError: LlabError,
     _state() {
